@@ -1,0 +1,49 @@
+{
+  "project": "__SLUG__",
+  "status": "template",
+  "note": "Replace these numbers from the film's master.md. Status stays template until the user sets it to approved. Still generation waits for approved.",
+  "palette": [
+    {"name": "paper", "hex": "#C8C2B6", "role": "ground"},
+    {"name": "ink", "hex": "#1A1917", "role": "darkest"},
+    {"name": "graphite", "hex": "#5E5A54", "role": "mid"},
+    {"name": "chalk", "hex": "#F4F1E8", "role": "highlight"},
+    {"name": "ash", "hex": "#8E887E", "role": "dust"},
+    {"name": "shadow", "hex": "#3E4650", "role": "cool shadow"},
+    {"name": "mist", "hex": "#D9D6CE", "role": "haze"},
+    {"name": "night", "hex": "#262B30", "role": "deep"}
+  ],
+  "accent": {"name": "accent", "hex": "#8C5A3C", "max_frame_pct": 8, "max_elements": 2, "where": "name the one or two elements that may carry it"},
+  "typefaces": {
+    "on_screen": "none",
+    "if_added_later": "Noto Serif",
+    "banned": ["Orbitron", "terminal HUD", "karaoke"]
+  },
+  "motion": {
+    "fps": 24,
+    "push_in_pct": [6, 10],
+    "push_ease": "ease-in-out",
+    "parallax_layers": [2, 3],
+    "parallax_shift_pct": [2, 4],
+    "hard_cut_tolerance_frames": 1,
+    "verse_cuts": "on phrase ends, never on the snare; at most one new picture per sentence pair",
+    "chorus_cuts": "hard cuts on the downbeat",
+    "soft": "name any dissolve here",
+    "grain": "fixed overlay, or none",
+    "generated_motion": "off until a two-shot test is approved"
+  },
+  "banned": [
+    "text inside an image or video prompt",
+    "a negation in a prompt",
+    "a real person's name, voice or recording",
+    "book covers and screen stills",
+    "extra hands or extra limbs",
+    "a second grade over the whole frame",
+    "saturated colour outside the accent"
+  ],
+  "storyboard": [
+    {"section": "Verse 1", "line": 0, "text": "One quiet line to start the song.", "shot": "v1_open", "framing": "wide, one figure, empty room", "motion": "push-in 6%, ease-in-out", "on_screen_text": "none"},
+    {"section": "Verse 1", "line": 1, "text": "Another line, still unhurried.", "shot": "v1_open", "framing": "same frame, held", "motion": "push-in continues to 8%", "on_screen_text": "none"},
+    {"section": "Chorus", "line": 0, "text": "Hold the picture.", "shot": "c_hold", "framing": "medium, the figure still", "motion": "hard cut on the downbeat, then a 6% push", "on_screen_text": "none"},
+    {"section": "Chorus", "line": 1, "text": "Let it breathe.", "shot": "c_hold", "framing": "same frame", "motion": "hold, grain fixed if the guide uses grain", "on_screen_text": "none"}
+  ]
+}

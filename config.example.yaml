@@ -1,0 +1,21 @@
+# Example project config. The pipeline itself reads CLAUDE.md / master.md / style_guide.md and env vars
+# (.env.example); this file documents the same knobs in one place. Values are placeholders.
+paths:
+  projects_dir: ${PROJECTS_DIR}
+  envs_dir: ${ENVS_DIR}
+  comfy_dir: ${COMFY_DIR}
+  review_dir: ${REVIEW_DIR}      # synced folder for phone review
+  gpu_lock: ${GPU_LOCK}
+services:
+  comfyui_url: http://127.0.0.1:8188
+  acestep_api: http://127.0.0.1:8001   # pipeline/acestep.py PORT
+gates:            # mirrors CLAUDE.md "Config"
+  song_take: on
+  looks: off
+  final_cut: on
+song_gate:        # examples/launch-window/pipeline/song_rounds.py
+  stage1_total_min: 0.9
+  length_s: [150, 170]
+  ending_fade_s: [6, 10]
+  require_kick_from_drop1: true
+budget_cap: 0     # never spend money without approval

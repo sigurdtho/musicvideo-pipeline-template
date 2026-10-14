@@ -1,0 +1,1 @@
+google/fonts main (2026-10-03): ofl/anton, ofl/cormorantgaramond, ofl/jetbrainsmono, ofl/inter (Inter-wght.ttf = Inter[opsz,wght].ttf; SIL OFL 1.1)

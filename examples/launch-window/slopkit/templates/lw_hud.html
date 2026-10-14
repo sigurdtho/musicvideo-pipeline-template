@@ -1,0 +1,355 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Launch Window layer 2 (qc/HUD_STYLE.md + the 2026-10-13 18:57 slopcore addendum): the mission-ops HUD, the code
+     pictures (orbit diagram, grids), beat-locked slopcore furniture and the word-timed sung lyrics. Every glyph is code.
+     Spec (built by pipeline/hud.py): {fps, dur, beat0, beat, code:[...], events:[...], lyrics:[...], levels:[[...]], ...} -->
+<style>
+  @font-face { font-family: "Anton"; src: url("fonts/Anton-Regular.ttf"); }
+  @font-face { font-family: "Mono"; src: url("fonts/JetBrainsMono-wght.ttf"); font-weight: 100 800; }
+  @font-face { font-family: "Inter"; src: url("fonts/Inter-wght.ttf"); font-weight: 100 900; }
+  :root { --ink: #F2F4F6; --tint: #9DB4CC; --accent: #FF5A1F; --night: #05070A; }
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden; }
+  canvas { position: absolute; left: 0; top: 0; }
+  .t { position: absolute; white-space: nowrap; box-sizing: border-box; overflow: hidden; color: var(--ink);
+       text-shadow: 0 0 14px rgba(5, 7, 10, 0.55), 0 0 3px rgba(5, 7, 10, 0.7); }
+  .mono { font-family: "Mono", monospace; font-weight: 500; text-transform: uppercase; }
+  #counter { right: 96px; top: 66px; height: 66px; width: 900px; text-align: right; font-size: 46px; line-height: 66px; }
+  #counter .u { font-size: 22px; color: var(--tint); margin-left: 10px; letter-spacing: 0.08em; }
+  #counter .live { color: var(--accent); }
+  #phase { right: 96px; top: 134px; height: 34px; width: 600px; text-align: right; font-size: 22px; line-height: 34px; color: var(--tint); }
+  #anchor { left: 96px; top: 994px; height: 40px; width: 700px; font-family: "Inter"; font-weight: 600; font-size: 20px;
+            letter-spacing: 0.18em; line-height: 40px; }
+  #telem { right: 96px; top: 950px; height: 76px; width: 420px; text-align: right; font-size: 22px; line-height: 36px; }
+  #slam { left: 160px; width: 1600px; height: 340px; display: flex; align-items: center; justify-content: center;
+          font-family: "Anton"; text-transform: uppercase; letter-spacing: 0.02em; line-height: 0.9; }
+  #slam .w { display: inline-block; margin: 0 0.12em; }
+  #slam .acc { color: var(--accent); }
+  .label { font-size: 18px; height: 28px; line-height: 28px; width: 320px; }
+  #lyr { left: 260px; width: 1400px; display: flex; align-items: center; justify-content: center; flex-wrap: nowrap; }
+  #lyr.verse { top: 846px; height: 86px; font-family: "Inter"; font-weight: 700; font-size: 46px; }
+  #lyr.hook { top: 790px; height: 130px; font-family: "Anton"; font-size: 84px; text-transform: uppercase; letter-spacing: 0.01em; }
+  #lyr .w { margin: 0 0.17em; transition: none; }
+  #lyr .todo { color: rgba(157, 180, 204, 0.38); }
+  #lyr .cur { color: var(--accent); }
+  #lyr .key { text-decoration: underline; text-decoration-thickness: 4px; text-underline-offset: 8px; text-decoration-color: var(--accent); }
+  #bar { left: 96px; top: 66px; height: 34px; width: 420px; font-size: 20px; line-height: 34px; color: var(--tint); }
+  #rail { left: 96px; top: 300px; width: 230px; height: 420px; font-size: 15px; line-height: 21px; color: rgba(157, 180, 204, 0.55);
+          white-space: pre; }
+  .sticker { position: absolute; padding: 0 22px; height: 86px; line-height: 86px; font-family: "Anton"; font-size: 52px;
+             text-transform: uppercase; letter-spacing: 0.03em; box-sizing: border-box; white-space: nowrap; overflow: hidden; }
+  .sticker.a { background: var(--accent); color: var(--night); }
+  .sticker.b { background: var(--ink); color: var(--night); }
+  .sticker.c { background: var(--night); color: var(--ink); box-shadow: inset 0 0 0 3px var(--ink); }
+  #flash { position: absolute; inset: 0; background: #fff; opacity: 0; }
+</style>
+<script src="common.js"></script>
+</head>
+<body>
+<canvas id="bg" width="1920" height="1080"></canvas>
+<canvas id="fx" width="1920" height="1080"></canvas>
+<div id="bar" class="t mono" data-box="bar"></div>
+<div id="rail" class="t mono" data-box="rail" data-nocheck></div>
+<div id="counter" class="t mono" data-box="counter"></div>
+<div id="phase" class="t mono" data-box="phase"></div>
+<div id="anchor" class="t" data-box="anchor"></div>
+<div id="telem" class="t mono" data-box="telem"></div>
+<div id="labels"></div>
+<div id="stickers"></div>
+<div id="slam" class="t readable" data-box="slam"></div>
+<div id="lyr" class="t readable" data-box="lyrics"></div>
+<div id="flash"></div>
+<script>
+const S = SLOP;
+let SPEC = null, IMGS = {};
+const AU = 228, CX = 960, CY = 540, RE = 1.0, RM = 1.524, TE = 365.25, TM = 686.98;
+const COL = {ink: '#F2F4F6', tint: '#9DB4CC', accent: '#FF5A1F', night: '#05070A'};
+
+window.setSpec = function (spec) {
+  SPEC = spec;
+  const loads = [];
+  for (const c of SPEC.code) for (const src of (c.images || [])) {
+    if (IMGS[src]) continue;
+    const im = new Image(); IMGS[src] = im;
+    loads.push(new Promise(r => { im.onload = r; im.onerror = r; }));
+    im.src = src;
+  }
+  return Promise.all(loads).then(() => true);
+};
+
+const active = (list, t) => list.filter(e => t >= e.t_in - 1e-6 && t < e.t_out - 1e-6);
+const beatIdx = t => Math.floor((t - SPEC.beat0) / SPEC.beat + 1e-6);
+const frameOf = t => Math.round(t * SPEC.fps);
+
+// ---------------------------------------------------------------- orbit diagram (code picture)
+function pos(r, ang) { return [CX + AU * r * Math.cos(ang), CY - AU * r * Math.sin(ang)]; }
+function orbit(ctx, r, col, a = 1) { ctx.globalAlpha = a; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.arc(CX, CY, AU * r, 0, 2 * Math.PI); ctx.stroke(); ctx.globalAlpha = 1; }
+function dot(ctx, xy, d, col) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(xy[0], xy[1], d / 2, 0, 2 * Math.PI); ctx.fill(); }
+const A = (RE + RM) / 2, E = (RM - RE) / (RM + RE);
+function transfer(ctx, th0, nu1, col, w = 2) {  // Hohmann ellipse from Earth (true anomaly 0) to nu1, counter-clockwise
+  ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath();
+  for (let k = 0; k <= 120; k++) { const nu = nu1 * k / 120, r = A * (1 - E * E) / (1 + E * Math.cos(nu));
+    const p = pos(r, th0 + nu); k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); }
+  ctx.stroke();
+}
+const D2R = Math.PI / 180, LEAD = 44 * D2R;
+function drawOrbit(ctx, c, t) {
+  const u = S.clamp((t - c.t_in) / (c.t_out - c.t_in), 0, 1);
+  ctx.fillStyle = COL.night; ctx.fillRect(0, 0, 1920, 1080);
+  dot(ctx, [CX, CY], 10, COL.ink);
+  orbit(ctx, RE, COL.ink, 0.55); orbit(ctx, RM, COL.tint, 0.55);
+  const th0 = 200 * D2R;  // departure longitude (screen-left), fixed for the whole film
+  let eA, mA, days;
+  switch (c.mode) {
+    case 'intro': {  // the dots slide toward the 44 degree lead
+      const k = S.easeOut(u); eA = th0 + (1 - k) * 60 * D2R; mA = th0 + LEAD + (1 - k) * 20 * D2R; break; }
+    case 'cycle': {  // one synodic cycle: Mars laps back to the lead after 780 days
+      days = 780 * u; eA = th0 + 2 * Math.PI * days / TE; mA = th0 + LEAD + 2 * Math.PI * days / TM; break; }
+    case 'lock': case 'race': {
+      const k = S.easeIO(Math.min(1, u * 1.15)); eA = th0 - (1 - k) * 70 * D2R; mA = th0 + LEAD - (1 - k) * 37 * D2R; break; }
+    case 'arc': case 'depart': {
+      days = 259 * (c.mode === 'arc' ? 0 : u); eA = th0 + 2 * Math.PI * days / TE; mA = th0 + LEAD + 2 * Math.PI * days / TM; break; }
+    case 'fan': { eA = th0; mA = th0 + LEAD; break; }
+    default: { days = 400 * u; eA = th0 + 2 * Math.PI * days / TE; mA = th0 + LEAD + 2 * Math.PI * days / TM; }
+  }
+  // lead-angle meter
+  if (c.mode === 'lock' || c.mode === 'race' || c.mode === 'intro') {
+    const d = (mA - eA);
+    ctx.strokeStyle = COL.tint; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(CX, CY, AU * 0.55, -eA, -mA, true); ctx.stroke();
+    for (const a of [eA, mA]) { const p0 = pos(0.45, a), p1 = pos(0.65, a); ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke(); }
+  }
+  if (c.mode === 'arc') transfer(ctx, th0, Math.PI * S.clamp((t - c.t_in) / c.arc_s, 0, 1), COL.accent, 3);
+  if (c.mode === 'depart') {
+    transfer(ctx, th0, Math.PI, 'rgba(255,90,31,0.45)', 2);
+    const nu = Math.PI * u, r = A * (1 - E * E) / (1 + E * Math.cos(nu));
+    transfer(ctx, th0, nu, COL.accent, 3); dot(ctx, pos(r, th0 + nu), 9, COL.accent);
+  }
+  if (c.mode === 'fan') {  // every 780 days the geometry repeats 48.8 degrees further round
+    const n = Math.min(c.arcs, 1 + Math.floor(u * c.arcs * 1.4));
+    for (let i = 0; i < n; i++) {
+      const sh = i * 48.8 * D2R; transfer(ctx, th0 + sh, Math.PI, i === n - 1 ? COL.accent : 'rgba(157,180,204,0.6)', 2);
+      const r = A * (1 - E * E) / (1 + E * Math.cos(Math.PI * 0.55)); dot(ctx, pos(r, th0 + sh + Math.PI * 0.55), 7, COL.ink);
+    }
+  }
+  dot(ctx, pos(RE, eA), 10, COL.ink); dot(ctx, pos(RM, mA), 8, COL.tint);
+  ctx.globalAlpha = c.fade_out ? S.clamp((c.t_out - t) / c.fade_out, 0, 1) : 1;
+}
+
+// ---------------------------------------------------------------- grid of plates (code picture)
+function drawGrid(ctx, c, t) {
+  ctx.fillStyle = COL.night; ctx.fillRect(0, 0, 1920, 1080);
+  const b = Math.max(0, beatIdx(t) - beatIdx(c.t_in));
+  const n = c.sizes[Math.min(c.sizes.length - 1, Math.floor(b / c.beats_per_size))];
+  const gap = 6, cw = (1920 - gap * (n + 1)) / n, ch = (1080 - gap * (n + 1)) / n, imgs = c.images;
+  const rnd = S.rng(1000 + b);
+  for (let i = 0; i < n * n; i++) {
+    const im = IMGS[imgs[(i * 7 + b * 3) % imgs.length]];
+    const x = gap + (i % n) * (cw + gap), y = gap + Math.floor(i / n) * (ch + gap);
+    if (im && im.naturalWidth) {
+      const s = Math.max(cw / im.naturalWidth, ch / im.naturalHeight);
+      const sw = cw / s, sh = ch / s;
+      ctx.drawImage(im, (im.naturalWidth - sw) / 2, (im.naturalHeight - sh) / 2, sw, sh, x, y, cw, ch);
+    }
+    if (rnd() < 0.12) { ctx.fillStyle = 'rgba(255,90,31,0.28)'; ctx.fillRect(x, y, cw, ch); }
+  }
+}
+
+// ---------------------------------------------------------------- frame furniture (always on, beat-locked)
+function furniture(ctx, t) {
+  const b = beatIdx(t), ph = (t - SPEC.beat0) / SPEC.beat - b, down = ((b % 4) + 4) % 4 === 0;
+  const pulse = (down ? 1 : 0.45) * Math.max(0, 1 - ph * 3);
+  const L = 56 + 10 * pulse, x0 = 96, y0 = 54, x1 = 1824, y1 = 1026;
+  ctx.strokeStyle = `rgba(242,244,246,${0.55 + 0.4 * pulse})`; ctx.lineWidth = 3;
+  for (const [x, y, sx, sy] of [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]) {
+    ctx.beginPath(); ctx.moveTo(x + sx * L, y); ctx.lineTo(x, y); ctx.lineTo(x, y + sy * L); ctx.stroke(); }
+  // centre reticle: four ticks that breathe on the beat
+  const r = 26 + 8 * pulse; ctx.strokeStyle = 'rgba(242,244,246,0.35)'; ctx.lineWidth = 2;
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.beginPath();
+    ctx.moveTo(CX + dx * r, CY + dy * r); ctx.lineTo(CX + dx * (r + 14), CY + dy * (r + 14)); ctx.stroke(); }
+  // beat squares (4) + 16th ticks, under the bar readout
+  for (let k = 0; k < 4; k++) { const on = ((b % 4) + 4) % 4 === k;
+    ctx.fillStyle = on ? (k === 0 ? COL.accent : COL.ink) : 'rgba(157,180,204,0.3)'; ctx.fillRect(96 + k * 30, 110, 22, 10); }
+  // level meter (8 bands) from the master's per-frame band energies
+  const lv = SPEC.levels[Math.min(SPEC.levels.length - 1, Math.max(0, frameOf(t)))] || [];
+  for (let k = 0; k < lv.length; k++) { const h = 6 + 70 * lv[k];
+    ctx.fillStyle = k < 2 ? 'rgba(255,90,31,0.85)' : 'rgba(242,244,246,0.7)'; ctx.fillRect(240 + k * 14, 130 - h + 70, 9, h); }
+  // timeline scrubber along the top safe edge: the whole song, with the section marks
+  const w = 1728, x = 96, y = 40;
+  ctx.fillStyle = 'rgba(157,180,204,0.25)'; ctx.fillRect(x, y, w, 2);
+  for (const m of SPEC.marks) ctx.fillRect(x + w * m / SPEC.dur, y - 6, 2, 14);
+  ctx.fillStyle = COL.accent; ctx.fillRect(x, y - 1, w * t / SPEC.dur, 4);
+}
+
+// ---------------------------------------------------------------- text layers
+function setText(el, html) { if (el._h !== html) { el.innerHTML = html; el._h = html; } }
+function showEl(el, on) { el.style.visibility = on ? 'visible' : 'hidden'; }
+
+function renderCounter(t) {
+  const el = document.getElementById('counter'), ev = active(SPEC.events.filter(e => e.kind === 'counter'), t).pop();
+  showEl(el, !!ev);
+  if (!ev) return;
+  let txt = ev.text, unit = ev.unit || '';
+  let since = ev.t_in;
+  if (ev.ticks) { const k = ev.ticks.filter(x => x.t <= t + 1e-6).pop(); if (k) { txt = k.text; since = k.t;
+    if (k.unit !== undefined) unit = k.unit; } }
+  if (ev.type_unit && unit) { const n = Math.max(0, Math.floor((t - since) * SPEC.fps) + 1); unit = unit.slice(0, n); }
+  const cls = ev.live ? 'live' : '';
+  setText(el, `<span class="${cls}">${txt}</span>${unit ? `<span class="u">${unit}</span>` : ''}`);
+}
+function renderSimple(id, kind, t, fmt) {
+  const el = document.getElementById(id), ev = active(SPEC.events.filter(e => e.kind === kind), t).pop();
+  showEl(el, !!ev);
+  if (!ev) return;
+  setText(el, fmt ? fmt(ev, t) : ev.text);
+  el.style.opacity = ev.fade_in ? S.clamp((t - ev.t_in) / ev.fade_in, 0, 1) : 1;
+}
+function telemetry(ev, t) {
+  if (ev.mode === 'tests') { const n = Math.min(7, 1 + Math.floor((t - ev.t_in) / ev.step)); return `TESTS <span style="color:#FF5A1F">${n}</span><br>CATCH ✓`; }
+  const s = Math.max(0, t - ev.t0), a = 14.0, alt = 0.5 * a * s * s / 1000, vel = a * s;  // code ascent curve
+  return `ALT ${alt.toFixed(2).padStart(6, '0')} KM<br>VEL ${vel.toFixed(0).padStart(4, '0')} M/S`;
+}
+
+function renderLabels(ctx, t) {
+  const host = document.getElementById('labels'), evs = active(SPEC.events.filter(e => e.kind === 'label'), t);
+  let html = '';
+  for (const ev of evs) {
+    const [x, y, w, h] = ev.box, f = (t - ev.t_in) * SPEC.fps, out = (ev.t_out - t) * SPEC.fps;
+    const draw = S.clamp(Math.min(f / 6, out / 4), 0, 1);
+    const L = Math.min(w, h) * 0.3 * draw + 2;
+    ctx.strokeStyle = COL.tint; ctx.lineWidth = 2;
+    for (const [cx, cy, sx, sy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
+      ctx.beginPath(); ctx.moveTo(cx + sx * L, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + sy * L); ctx.stroke(); }
+    const n = Math.max(0, Math.floor((f - 6) * 30 / SPEC.fps));
+    const txt = ev.text.slice(0, draw < 1 && out < 4 ? 0 : n);
+    const lx = ev.side === 'left' ? x - 12 - 320 : x + w + 12, align = ev.side === 'left' ? 'right' : 'left';
+    html += `<div class="t mono label" data-box="label-${ev.text}" style="left:${lx}px;top:${y}px;text-align:${align}">${txt}</div>`;
+  }
+  setText(host, html);
+}
+
+function renderSlam(t) {
+  const el = document.getElementById('slam'), ev = active(SPEC.events.filter(e => e.kind === 'slam'), t).pop();
+  showEl(el, !!ev);
+  if (!ev) return;
+  const f = (t - ev.t_in) * SPEC.fps;
+  let words = ev.words, accent = -1;
+  if (ev.swap && t >= ev.swap.t - 3 / SPEC.fps) {
+    const k = (t - (ev.swap.t - 3 / SPEC.fps)) * SPEC.fps;
+    if (t < ev.swap.t) { // old word drops 40 px and fades over 3 frames, ending on the downbeat
+      words = ev.words.map((w, i) => ev.swap.idx.includes(i) ? `<span data-nocheck style="display:inline-block;transform:translateY(${13 * k}px);opacity:${1 - k / 3}">${w}</span>` : w);
+    } else {
+      words = ev.swap.words; accent = (t - ev.swap.t) < SPEC.beat ? ev.swap.new_idx : -1;
+    }
+  }
+  setText(el, words.map((w, i) => `<span class="w${(i === accent || (ev.accent_idx === i)) ? ' acc' : ''}">${w}</span>`).join(''));
+  el.style.top = ((ev.y || 410) - 40) + "px";
+  el.style.fontSize = (ev.size || 190) + 'px';
+  const sc = f < 2 ? 1.06 - 0.03 * f : 1;
+  el.style.transform = `scale(${sc})`;
+  el.style.opacity = ev.opacity || 1;
+  el.style.filter = f < 1 ? 'brightness(1.8)' : 'none';
+}
+
+function renderLyrics(t) {
+  const el = document.getElementById('lyr');
+  const l = SPEC.lyrics.find(x => t >= x.t_in - 1e-6 && t < x.t_out - 1e-6);
+  if (!l) { showEl(el, false); return; }
+  showEl(el, true);
+  el.className = 't readable ' + (l.style || 'verse');
+  let html = '';
+  for (const w of l.words) {
+    const cls = t < w.s ? 'todo' : (t < w.e + 0.08 ? 'cur' : 'done');
+    html += `<span class="w ${cls}${w.key ? ' key' : ''}">${w.w}</span>`;
+  }
+  setText(el, html);
+  const f = (t - l.t_in) * SPEC.fps;
+  el.style.opacity = S.clamp(f / 2, 0, 1) * S.clamp((l.t_out - t) * SPEC.fps / 2, 0, 1);
+  el.style.transform = l.style === 'hook' && f < 2 ? `scale(${1.08 - 0.04 * f})` : 'none';
+}
+
+function renderStickers(t) {
+  const host = document.getElementById('stickers'), evs = active(SPEC.events.filter(e => e.kind === 'sticker'), t);
+  let html = '';
+  for (const ev of evs) {
+    const f = (t - ev.t_in) * SPEC.fps, sc = f < 2 ? 1.25 - 0.12 * f : 1;
+    html += `<div class="sticker ${ev.style} readable" data-box="sticker-${ev.text}" style="left:${ev.x}px;top:${ev.y}px;` +
+            `transform:rotate(${ev.rot}deg) scale(${sc})">${ev.text}</div>`;
+  }
+  setText(host, html);
+}
+
+function renderRail(t) {
+  const el = document.getElementById('rail'), ev = active(SPEC.events.filter(e => e.kind === 'rail'), t).pop();
+  showEl(el, !!ev);
+  if (!ev) return;
+  const b = beatIdx(t), rnd = S.rng(77 + b), lines = [];
+  const lox = Math.min(100, 40 + 0.45 * t).toFixed(1), ch4 = Math.min(100, 38 + 0.46 * t).toFixed(1);
+  lines.push(`LOX LOAD  ${lox}%`, `CH4 LOAD  ${ch4}%`, `BEAT      ${String(((b % 4) + 4) % 4 + 1)}/4`,
+             `BAR       ${String(Math.floor(b / 4) + 1).padStart(3, '0')}`, `AZ        044.0°`, `WIND      ${(4 + 6 * rnd()).toFixed(1)} KT`,
+             `TANK P    ${(5.8 + 0.4 * rnd()).toFixed(2)} BAR`, `GSE       NOMINAL`, `RANGE     GO`, `PAD       CLEAR`);
+  const k = ((b % lines.length) + lines.length) % lines.length;
+  setText(el, lines.slice(k).concat(lines.slice(0, k)).join('\n'));
+}
+
+// r906c: a plate-attached arc (HUD_STYLE row 6): from p0 to p1 in plate pixels, following the shot's code push
+function renderArcs(ctx, t) {
+  for (const ev of active(SPEC.events.filter(e => e.kind === 'arc'), t)) {
+    const u = S.clamp((t - ev.shot_t0) / (ev.shot_t1 - ev.shot_t0), 0, 1), sm = u * u * (3 - 2 * u);
+    const sc = 1 + ev.push * sm, fx = ev.focus[0] * 1920, fy = ev.focus[1] * 1080;
+    const P = ([x, y]) => [fx + (x - fx) * sc, fy + (y - fy) * sc];
+    const [ax, ay] = P(ev.p0), [bx, by] = P(ev.p1), dx = bx - ax, dy = by - ay;
+    const cx = (ax + bx) / 2 - dy * ev.bend, cy = (ay + by) / 2 + dx * ev.bend;
+    const k = S.clamp((t - ev.t_in) / ev.draw_s, 0, 1), N = 48;
+    ctx.strokeStyle = COL.accent; ctx.lineWidth = 2; ctx.beginPath();
+    for (let i = 0; i <= N * k; i++) {
+      const q = i / N, x = (1 - q) * (1 - q) * ax + 2 * (1 - q) * q * cx + q * q * bx, y = (1 - q) * (1 - q) * ay + 2 * (1 - q) * q * cy + q * q * by;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+}
+
+// r906c: the next ship coming down (PLAN row 41): a warm point descending slowly in plate pixels, following the push
+function renderBeacons(ctx, t) {
+  for (const ev of active(SPEC.events.filter(e => e.kind === 'beacon'), t)) {
+    const u = S.clamp((t - ev.shot_t0) / (ev.shot_t1 - ev.shot_t0), 0, 1), sm = u * u * (3 - 2 * u);
+    const sc = 1 + ev.push * sm, fx = ev.focus[0] * 1920, fy = ev.focus[1] * 1080;
+    const q = S.clamp((t - ev.t_in) / (ev.t_out - ev.t_in), 0, 1);
+    const x = ev.p0[0] + (ev.p1[0] - ev.p0[0]) * q, y = ev.p0[1] + (ev.p1[1] - ev.p0[1]) * q;
+    const X = fx + (x - fx) * sc, Y = fy + (y - fy) * sc;
+    const fade = S.clamp((t - ev.t_in) / 0.6, 0, 1) * S.clamp((ev.t_out - t) / 0.4, 0, 1);
+    const g = ctx.createRadialGradient(X, Y, 0, X, Y, 16);
+    g.addColorStop(0, `rgba(255,214,160,${0.95 * fade})`); g.addColorStop(0.25, `rgba(255,170,90,${0.45 * fade})`);
+    g.addColorStop(1, 'rgba(255,140,60,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(X, Y, 16, 0, 2 * Math.PI); ctx.fill();
+  }
+}
+
+window.renderAt = function (t) {
+  const bg = document.getElementById('bg').getContext('2d'), fx = document.getElementById('fx').getContext('2d');
+  bg.clearRect(0, 0, 1920, 1080); fx.clearRect(0, 0, 1920, 1080);
+  const code = active(SPEC.code, t).pop();
+  if (code) { if (code.type === 'orbit') drawOrbit(bg, code, t); else if (code.type === 'grid') drawGrid(bg, code, t); bg.globalAlpha = 1; }
+  if (SPEC.furniture.some(s => t >= s[0] && t < s[1])) furniture(fx, t);
+  const b = beatIdx(t);
+  setText(document.getElementById('bar'), `BAR ${String(Math.floor(b / 4) + 1).padStart(3, '0')} · ${((b % 4) + 4) % 4 + 1}  ·  128 BPM`);
+  showEl(document.getElementById('bar'), SPEC.furniture.some(s => t >= s[0] && t < s[1]));
+  renderCounter(t);
+  renderSimple('phase', 'phase', t);
+  renderSimple('anchor', 'anchor', t);
+  renderSimple('telem', 'telemetry', t, telemetry);
+  renderLabels(fx, t);
+  renderArcs(fx, t);
+  renderBeacons(bg, t);
+  renderRail(t);
+  renderStickers(t);
+  renderSlam(t);
+  renderLyrics(t);
+  const fl = SPEC.flashes.find(x => t >= x.t - 1e-6 && t < x.t + x.frames / SPEC.fps - 1e-6);
+  document.getElementById('flash').style.opacity = fl ? fl.a * (1 - (t - fl.t) * SPEC.fps / fl.frames) : 0;
+};
+</script>
+</body>
+</html>

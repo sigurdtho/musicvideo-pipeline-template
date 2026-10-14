@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Karaoke lyric line (the reviewer's final-cut review: show the song lyrics on screen, synced). One sung line, centred;
+     each word fills with cyan as it is sung (word times from the Stage 2 forced alignment). Rendered frame-by-frame
+     by pipeline/overlay.py; window.renderAt(t) sets the state for time t (t = 0 is the line's fade-in). -->
+<style>
+  @font-face { font-family: "JetBrains Mono"; src: url("fonts/JetBrainsMono-wght.ttf"); font-weight: 100 800; }
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden; }
+  #line {
+    position: absolute; left: 0; width: 1920px; text-align: center; white-space: nowrap;
+    font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 38px; letter-spacing: 0.01em;
+  }
+  .w { position: relative; display: inline-block; color: rgba(255, 255, 255, 0.92);
+       text-shadow: 0 0 2px #000, 0 2px 4px rgba(0, 0, 0, 0.85), 0 0 14px rgba(0, 0, 0, 0.6); }
+  .w .fill { position: absolute; left: 0; top: 0; overflow: hidden; white-space: nowrap; color: #7FE3FF;
+             text-shadow: 0 0 2px #000, 0 2px 4px rgba(0, 0, 0, 0.85), 0 0 12px rgba(89, 211, 255, 0.85); }
+</style>
+</head>
+<body>
+<div id="line"></div>
+<script>
+// {words: [{w, s, e}] (seconds on the line's local clock), y (baseline centre), t_in, t_out}
+let L = null;
+const FADE_IN = 0.18, FADE_OUT = 0.3;
+
+window.setBox = function (box) {
+  L = box;
+  const el = document.getElementById("line");
+  el.textContent = "";
+  box.words.forEach((x, i) => {
+    if (i) el.appendChild(document.createTextNode(" "));
+    const w = document.createElement("span"); w.className = "w"; w.textContent = x.w;
+    const f = document.createElement("span"); f.className = "fill"; f.id = "f" + i; f.textContent = x.w;
+    w.appendChild(f); el.appendChild(w);
+  });
+  const h = el.getBoundingClientRect().height;
+  el.style.top = (box.y - h / 2) + "px";
+  return true;
+};
+
+window.renderAt = function (t) {
+  const el = document.getElementById("line");
+  if (t < L.t_in || t >= L.t_out + FADE_OUT) { el.style.visibility = "hidden"; return; }
+  el.style.visibility = "visible";
+  let o = 1;
+  if (t < L.t_in + FADE_IN) o = (t - L.t_in) / FADE_IN;
+  if (t >= L.t_out) o = 1 - (t - L.t_out) / FADE_OUT;
+  el.style.opacity = Math.max(0, Math.min(1, o));
+  L.words.forEach((x, i) => {
+    const u = x.e > x.s ? Math.max(0, Math.min(1, (t - x.s) / (x.e - x.s))) : (t >= x.s ? 1 : 0);
+    document.getElementById("f" + i).style.width = (u * 100).toFixed(2) + "%";
+  });
+};
+</script>
+</body>
+</html>

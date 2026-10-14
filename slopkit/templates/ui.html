@@ -1,0 +1,642 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- MODEL-layer UI for slopcore videos: one page renders every UI event of a timeline (ui_timeline.json), so the whole
+     UI layer is one transparent PNG per frame. Widgets: terminal, tokens, bbox, slider, bar, loss, meter, chat, loadbar,
+     toast, hud. Spec: {events: [{type, id, t_in, t_out, x, y, w, h, ...}]}; window.renderAt(t) uses the song clock.
+     Theme "gilded glass" (master.md Overlay / UI spec, v2 2026-10-03): modern, clean motion graphics drawn from the
+     paintings' palette. Umber-black glass panels (the comp blurs the painting beneath them: slopkit.comp.glass_over),
+     hairlines, Inter for labels, JetBrains Mono (light) for machine text and numbers, warm gold accent, bone text,
+     one muted vermilion for alerts. No CRT, no scanlines, no saturated cyan/blue. -->
+<style>
+  @font-face { font-family: "JB"; src: url("fonts/JetBrainsMono-wght.ttf"); font-weight: 100 800; }
+  @font-face { font-family: "Inter"; src: url("fonts/Inter-wght.ttf"); font-weight: 100 900; }
+  :root { --glass: rgba(18, 12, 8, 0.70); --glass2: rgba(16, 11, 7, 0.80); --line: rgba(239, 230, 210, 0.24);
+          --line2: rgba(239, 230, 210, 0.12); --bone: #EFE6D2; --bone2: rgba(239, 230, 210, 0.64);
+          --gold: #D9B25F; --gold2: rgba(217, 178, 95, 0.55); --alert: #C8452F;
+          --cyan: var(--gold); --red: var(--alert); }   /* legacy names: timelines may still say color "cyan"/"red" */
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden; }
+  #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; font-family: "Inter", sans-serif; color: var(--bone);
+           font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1, "cv11" 1; -webkit-font-smoothing: antialiased; }
+  .w { position: absolute; box-sizing: border-box; }
+  .panel { background: linear-gradient(180deg, rgba(36, 25, 16, 0.70), var(--glass) 38%); border: 1px solid var(--line);
+           border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 238, 205, 0.10); }
+  .panel.red { border-color: rgba(200, 69, 47, 0.75); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38), 0 0 26px rgba(200, 69, 47, 0.22); }
+  .tb { position: absolute; left: 0; right: 0; top: 0; height: 52px; box-sizing: border-box; padding: 0 16px 0 76px;
+        border-bottom: 1px solid var(--line2); white-space: nowrap; overflow: hidden; line-height: 52px;
+        font-family: "JB", monospace; font-weight: 400; letter-spacing: 0.02em; color: var(--bone2); }
+  .tb .dots { position: absolute; left: 18px; top: 21px; line-height: 0; height: 10px; }
+  .tb .dots i { display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: rgba(239, 230, 210, 0.22); }
+  .tb .dots i:first-child { background: var(--gold2); }
+  .body { position: absolute; left: 0; right: 0; top: 52px; bottom: 0; box-sizing: border-box; padding: 12px 22px; overflow: hidden; }
+  .ln { white-space: pre; line-height: 1.36; font-family: "JB", monospace; font-weight: 350; }
+  .cyan, .gold { color: var(--gold); } .red { color: var(--alert); } .bone { color: var(--bone); } .dim { color: var(--bone2); }
+  .lab { white-space: nowrap; overflow: hidden; font-weight: 500; letter-spacing: 0.01em; }
+  .num { white-space: nowrap; text-align: right; font-family: "JB", monospace; font-weight: 400; }
+  .track { position: absolute; background: rgba(239, 230, 210, 0.14); border-radius: 3px; }
+  .fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, rgba(217, 178, 95, 0.55), var(--gold));
+          border-radius: 3px; box-shadow: 0 0 12px rgba(217, 178, 95, 0.35); }
+  .knob { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: var(--bone);
+          box-shadow: 0 0 0 3px rgba(217, 178, 95, 0.35), 0 0 14px rgba(217, 178, 95, 0.45); }
+  .bb { position: absolute; border: 1px solid rgba(239, 230, 210, 0.55); box-sizing: border-box; }
+  .bb.red { border-color: rgba(200, 69, 47, 0.8); }
+  .tick { position: absolute; width: 18px; height: 18px; border-color: var(--gold); border-style: solid; border-width: 0; }
+  .tag { position: absolute; background: var(--glass2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 14px;
+         white-space: nowrap; box-sizing: border-box; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .tag .v { font-family: "JB", monospace; font-weight: 400; letter-spacing: 0; color: var(--gold); text-transform: none; }
+  .tag.red { border-color: rgba(200, 69, 47, 0.8); color: var(--alert); }
+  svg text { font-family: "Inter", sans-serif; }
+</style>
+<script src="common.js"></script>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+const S = SLOP;
+const POP_IN = 0.22, POP_OUT = 0.18;
+let WIDGETS = [];
+const GEO = new Set(['stitch', 'beam', 'rings', 'pathtext', 'links', 'brackets', 'micro', 'sil', 'streaks', 'flash', 'shock', 'invert']);  // v4: animate themselves
+
+
+function div(cls, parent, text) {
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  if (text !== undefined) d.textContent = text;
+  // roots go straight into the stage: fit()/scrollWidth need the element laid out while the widget is built
+  (parent || document.getElementById('stage')).appendChild(d);
+  return d;
+}
+function place(el, e) { Object.assign(el.style, {left: e.x + 'px', top: e.y + 'px', width: e.w + 'px', height: e.h + 'px'}); }
+
+// ------------------------------------------------------------------ widgets
+const BUILD = {
+  terminal(e) {  // {title, lines: [{t, text, cps=38, color, instant}], font_px=36, min_px=18, cursor=true, red}
+    const el = div('w panel' + (e.red ? ' red' : '')); place(el, e); el.dataset.box = e.id;
+    const tb = div('tb', el); const dots = div('dots', tb); dots.innerHTML = '<i></i><i></i><i></i>';
+    const title = document.createElement('span'); title.textContent = e.title || ''; tb.appendChild(title);  // window chrome, not 'readable' copy
+    tb.style.fontSize = '36px';  // 36 px floor for every word on screen (the user 2026-10-03)
+    const body = div('body', el);
+    const fpx = Math.max(36, e.font_px || 36), mpx = Math.max(36, e.min_px || 36);
+    // fit: the longest line (fully typed) must fit the body width at one shared font size
+    const probe = div('ln', body); probe.style.position = 'absolute'; probe.style.visibility = 'hidden';
+    probe.style.width = (e.w - 4 - 36) + 'px'; probe.style.overflow = 'hidden';
+    const longest = (e.lines || []).reduce((a, l) => (l.text.length > a.length ? l.text : a), '') + ' \u2588';
+    probe.textContent = longest;
+    const px = S.fit(probe, fpx, mpx);
+    if (probe.dataset.fitfail) el.dataset.fitfail = '1';
+    probe.remove();
+    body.style.fontSize = px + 'px';
+    const maxLines = Math.max(1, Math.floor((e.h - 52 - 20) / (px * 1.32)));
+    const rows = (e.lines || []).map(l => { const d = div('ln readable ' + (l.color || 'bone'), body); d.style.display = 'none'; return d; });
+    return {el, update(t) {
+      const started = [];
+      (e.lines || []).forEach((l, i) => { if (t >= l.t) started.push(i); });
+      const show = new Set(started.slice(-maxLines));
+      (e.lines || []).forEach((l, i) => {
+        const d = rows[i];
+        if (!show.has(i)) { d.style.display = 'none'; return; }
+        d.style.display = 'block';
+        const n = l.instant ? l.text.length : S.clamp(Math.floor((t - l.t) * (l.cps || 38)), 0, l.text.length);
+        const typing = n < l.text.length || i === started[started.length - 1];
+        const cursor = e.cursor !== false && typing && (Math.floor(t * 2.2) % 2 === 0 || n < l.text.length);
+        d.textContent = l.text.slice(0, n) + (cursor ? '\u2588' : '');
+      });
+    }};
+  },
+  tokens(e) {  // token stream that never repeats: every line is generated from its own index (seed, rate lines/s, font_px, color)
+    const el = div('w'); place(el, e); el.style.overflow = 'hidden'; el.dataset.nocheck = '1';
+    el.style.fontSize = (e.font_px || 18) + 'px'; el.style.opacity = e.opacity || 0.55; el.className = 'w ' + (e.color || 'cyan');
+    const V = (e.vocab || ("the light holds the line and the thread stays still token weight page tower oath source window cursor rain stone river")).split(' ');
+    const fmt = (i) => {
+      const r = S.rng((e.seed || 7) * 7919 + i * 104729), w = () => V[Math.floor(r() * V.length)], k = Math.floor(r() * 7);
+      const ms = Math.floor(i * 137 + r() * 90), ts = `${String(Math.floor(ms / 60000) % 60).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`;
+      const id = 1000 + Math.floor(r() * 150000), lg = (r() * 24 - 6).toFixed(2), p = r().toFixed(3);
+      return [`${ts} tok ${id} "${w()}" ${lg}`, `\u2581${w()} ${p}  \u2581${w()} ${(r()).toFixed(3)}`, `[${ts}] p(${w()})=${p}`,
+              `step ${(i * 7 + id) % 99991} loss ${(1 + r() * 3).toFixed(4)}`, `id ${id} \u2192 ${w()} | logit ${lg}`,
+              `${w()}:${w()} attn ${(r()).toFixed(2)} h${Math.floor(r() * 64)}`, `0x${id.toString(16)} ${w()} ${w()}`][k];
+    };
+    const lh = (e.font_px || 18) * 1.3, rows = Math.ceil(e.h / lh) + 1;
+    const box = div('', el); box.style.position = 'absolute'; box.style.left = '0'; box.style.whiteSpace = 'pre'; box.style.lineHeight = lh + 'px';
+    return {el, update(t) {
+      const k = Math.max(0, t - e.t_in) * (e.rate || 6), first = Math.floor(k) + Math.floor((e.t0 || e.t_in) * 37);
+      const out = []; for (let i = 0; i < rows; i++) out.push(fmt(first + i));
+      box.textContent = out.join('\n');
+      box.style.top = (-(k - Math.floor(k)) * lh) + 'px';
+    }};
+  },
+  bbox(e) {  // {keys: [{t, x, y, w, h}], label, color, label_px=30}
+    const el = div('w'); el.style.left = '0px'; el.style.top = '0px'; el.style.width = '1920px'; el.style.height = '1080px';
+    const red = e.color === 'red' ? ' red' : '';
+    const bb = div('bb' + red, el);
+    const ticks = [0, 1, 2, 3].map(i => { const k = div('tick', bb); k.style.borderColor = red ? 'var(--alert)' : 'var(--gold)'; return k; });
+    Object.assign(ticks[0].style, {left: '-5px', top: '-5px', borderLeftWidth: '2px', borderTopWidth: '2px'});
+    Object.assign(ticks[1].style, {right: '-5px', top: '-5px', borderRightWidth: '2px', borderTopWidth: '2px'});
+    Object.assign(ticks[2].style, {left: '-5px', bottom: '-5px', borderLeftWidth: '2px', borderBottomWidth: '2px'});
+    Object.assign(ticks[3].style, {right: '-5px', bottom: '-5px', borderRightWidth: '2px', borderBottomWidth: '2px'});
+    const tag = div('tag readable' + red, el); tag.dataset.box = e.id; tag.style.fontSize = Math.max(36, e.label_px || 36) + 'px';
+    const parts = (e.label || '').split(' \u00b7 ');                        // "subject · attn 0.97" -> name + mono value
+    tag.textContent = parts[0];
+    if (parts.length > 1) { const v = document.createElement('span'); v.className = 'v'; v.textContent = '  ' + parts.slice(1).join(' \u00b7 '); tag.appendChild(v); }
+    const lead = div('', el); lead.style.cssText = 'position:absolute;width:1px;background:rgba(239,230,210,0.45)';
+    return {el, update(t) {
+      const x = S.keyed(e.keys, t, 'x'), y = S.keyed(e.keys, t, 'y'), w = S.keyed(e.keys, t, 'w'), h = S.keyed(e.keys, t, 'h');
+      Object.assign(bb.style, {left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px'});
+      const tw = tag.offsetWidth, th = tag.offsetHeight;
+      let ty = y - th - 18; const below = e.label_side === 'below' || ty < 8; if (below) ty = y + h + 18;   // below on request or at the frame edge
+      let tx = S.clamp(e.label_align === 'right' ? x + w - tw : x, 8, 1912 - tw);
+      tag.style.left = tx + 'px'; tag.style.top = Math.min(ty, 1072 - th) + 'px';
+      Object.assign(lead.style, {left: (e.label_align === 'right' ? tx + tw - 15 : tx + 14) + 'px', top: (below ? y + h : ty + th) + 'px', height: '18px'});
+      // clean draw-on instead of a blink: the frame scales in from 104 % and fades up over 0.25 s
+      const u = S.easeOut(S.clamp((t - e.t_in) / 0.25, 0, 1));
+      el.style.opacity = 0.0 + u;
+      bb.style.transform = `scale(${1.04 - 0.04 * u})`;
+    }};
+  },
+  slider(e) {  // {label, keys: [{t, v}], min=0, max=2, digits=2, warn=1.2, label_px=30}
+    const el = div('w panel'); place(el, e); el.dataset.box = e.id;
+    const pad = 16, lab = div('lab readable', el, e.label || 'temperature'), num = div('num readable', el);
+    const fs = Math.max(36, e.label_px || 36);
+    Object.assign(lab.style, {position: 'absolute', left: pad + 'px', top: '6px', fontSize: fs + 'px', lineHeight: (fs * 1.25) + 'px'});
+    const digits = e.digits === undefined ? 2 : e.digits, widest = '8.' + '8'.repeat(digits);
+    num.textContent = widest; Object.assign(num.style, {position: 'absolute', right: pad + 'px', top: '6px', fontSize: fs + 'px', lineHeight: (fs * 1.25) + 'px'});
+    num.style.width = (num.scrollWidth + 2) + 'px';   // reserve the widest-digit width
+    lab.style.width = (e.w - 3 * pad - num.offsetWidth - 4) + 'px';
+    S.fit(lab, fs, 36);
+    const tr = div('track', el); Object.assign(tr.style, {left: pad + 'px', right: pad + 'px', bottom: '18px', height: '4px'});
+    const fill = div('fill', tr), knob = div('knob', tr); knob.style.top = '-6px';
+    return {el, update(t) {
+      const v = S.keyed(e.keys, t, 'v'), lo = e.min || 0, hi = e.max === undefined ? 2 : e.max;
+      const u = S.clamp((v - lo) / (hi - lo), 0, 1);
+      fill.style.width = (u * 100) + '%'; knob.style.left = `calc(${u * 100}% - 8px)`;
+      const hot = v > (e.warn === undefined ? 1.2 : e.warn);
+      fill.style.background = hot ? 'var(--alert)' : 'var(--gold)'; num.className = 'num readable ' + (hot ? 'red' : 'cyan');
+      num.textContent = v.toFixed(digits);
+    }};
+  },
+  bar(e) {  // context bar: {label, keys: [{t, v}] (0-100), flag: {at: 100, text}, label_px=28}
+    const el = div('w panel'); place(el, e); el.dataset.box = e.id;
+    const fs = Math.max(36, e.label_px || 36), pad = 14;
+    const lab = div('lab readable', el, e.label || 'context'), num = div('num readable cyan', el, '100 %');
+    Object.assign(lab.style, {position: 'absolute', left: pad + 'px', top: '4px', fontSize: fs + 'px', lineHeight: (fs * 1.3) + 'px'});
+    Object.assign(num.style, {position: 'absolute', right: pad + 'px', top: '4px', fontSize: fs + 'px', lineHeight: (fs * 1.3) + 'px'});
+    num.style.width = (num.scrollWidth + 2) + 'px';
+    lab.style.width = (e.w - 3 * pad - num.offsetWidth - 4) + 'px';
+    S.fit(lab, fs, 36);
+    const tr = div('track', el); Object.assign(tr.style, {left: pad + 'px', right: pad + 'px', bottom: '14px', height: '4px'});
+    const fill = div('fill', tr);
+    const flag = e.flag ? div('tag red readable', el, e.flag.text) : null;
+    if (flag) { flag.dataset.box = e.id + ':flag'; flag.style.fontSize = '36px'; flag.style.right = '0px'; flag.style.top = (e.h + 8) + 'px'; }
+    return {el, update(t) {
+      const v = S.clamp(S.keyed(e.keys, t, 'v'), 0, 100);
+      fill.style.width = v + '%'; num.textContent = Math.round(v) + ' %';
+      const full = e.flag && v >= e.flag.at - 0.01;
+      fill.style.background = full ? 'var(--alert)' : 'var(--gold)';
+      if (flag) flag.style.display = full && Math.floor(t * 3) % 2 === 0 ? 'block' : (full ? 'block' : 'none');
+    }};
+  },
+  loss(e) {  // training-loss curve: {title, subtitle, ratings[14], t_draw, dur, flash_t, bracket: {from, to, text, sub}, marker: {at, text}}
+    const el = div('w panel'); place(el, e); el.dataset.box = e.id;
+    const NS = 'http://www.w3.org/2000/svg';
+    const t1 = div('lab readable', el, e.title || 'eval loss'), t2 = div('lab readable cyan', el, e.subtitle || '');
+    Object.assign(t1.style, {position: 'absolute', left: '22px', right: '22px', top: '10px', height: '52px', lineHeight: '52px'});
+    Object.assign(t2.style, {position: 'absolute', left: '22px', right: '22px', top: '62px', height: '48px', lineHeight: '48px'});
+    S.fit(t1, 40, 36); S.fit(t2, 36, 36);
+    const svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', e.w - 4); svg.setAttribute('height', e.h - 116);
+    svg.style.position = 'absolute'; svg.style.left = '0px'; svg.style.top = '112px'; el.appendChild(svg);
+    // 36 px floor (the user 2026-10-03): axis numbers, labels, bracket and marker text are all 36 px
+    const FS = 36, W = e.w - 4, H = e.h - 116, L = 40, Rr = 34, T = 92, B = 98;
+    const n = e.ratings.length, loss = e.ratings.map(r => 6 - r), ymax = 3.5;
+    const X = i => L + (W - L - Rr) * i / (n - 1), Y = v => T + (H - T - B) * (1 - v / ymax);
+    const mk = (tag, attrs, parent = svg) => { const q = document.createElementNS(NS, tag); for (const k in attrs) q.setAttribute(k, attrs[k]); parent.appendChild(q); return q; };
+    mk('line', {x1: L, y1: H - B, x2: W - Rr + 6, y2: H - B, stroke: '#EFE6D2', 'stroke-opacity': 0.28});
+    mk('line', {x1: L, y1: T - 6, x2: L, y2: H - B, stroke: '#EFE6D2', 'stroke-opacity': 0.28});
+    for (let i = 0; i < n; i += 1) { if (n > 10 && i % 2 === 1 && i !== n - 1) continue; const q = mk('text', {x: X(i), y: H - B + 40, 'text-anchor': 'middle', 'font-size': FS, fill: '#EFE6D2', 'fill-opacity': 0.75}); q.textContent = i + 1; }
+    const xl = mk('text', {x: W - Rr, y: H - 10, 'text-anchor': 'end', 'font-size': FS, fill: '#EFE6D2'}); xl.textContent = e.xlabel || 'book';
+    const yl = mk('text', {x: L + 10, y: H - 10, 'text-anchor': 'start', 'font-size': FS, fill: '#EFE6D2', 'fill-opacity': 0.75}); yl.textContent = 'loss = 6 − ★';
+    let band = null, btxt = [], marker = null, mtxt = null;
+    if (e.bracket) {
+      const a = X(e.bracket.from - 1) - 18, b = X(e.bracket.to - 1) + 18;
+      band = mk('rect', {x: a, y: T - 6, width: b - a, height: H - B - T + 6, fill: '#C8452F', 'fill-opacity': 0.12, stroke: '#C8452F', 'stroke-opacity': 0.7, 'stroke-dasharray': '2 6'});
+      // one 36 px line above the plot, centred on the band but kept inside the panel
+      const txt = e.bracket.text + (e.bracket.sub ? ' ' + e.bracket.sub : '');
+      const q = mk('text', {x: (a + b) / 2, y: T - 22, 'text-anchor': 'middle', 'font-size': FS, fill: '#C8452F', 'font-weight': 600});
+      q.textContent = txt; const bw = q.getComputedTextLength();
+      const cx = S.clamp((a + b) / 2, L + bw / 2, W - Rr - bw / 2); q.setAttribute('x', cx);
+      if (bw > W - L - Rr) { q.textContent = e.bracket.text; q.setAttribute('x', S.clamp((a + b) / 2, L + q.getComputedTextLength() / 2, W - Rr - q.getComputedTextLength() / 2)); }
+      btxt.push(q);
+    }
+    if (e.marker) {
+      const mx = X(e.marker.at - 1);
+      marker = mk('line', {x1: mx, y1: T - 4, x2: mx, y2: H - B, stroke: '#D9B25F', 'stroke-dasharray': '4 6'});
+      mtxt = mk('text', {x: mx - 10, y: H - B - 16, 'text-anchor': 'end', 'font-size': FS, fill: '#D9B25F'}); mtxt.textContent = e.marker.text;
+    }
+    const glow = mk('filter', {id: 'g' + e.id, x: '-20%', y: '-20%', width: '140%', height: '140%'}); mk('feGaussianBlur', {stdDeviation: 3.5, result: 'b'}, glow); const fm = mk('feMerge', {}, glow); mk('feMergeNode', {in: 'b'}, fm); mk('feMergeNode', {in: 'SourceGraphic'}, fm);
+    const path = mk('polyline', {fill: 'none', stroke: '#D9B25F', 'stroke-width': 2.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', filter: `url(#g${e.id})`});
+    const dots = loss.map((v, i) => mk('circle', {cx: X(i), cy: Y(v), r: 4.5, fill: '#D9B25F', stroke: 'rgba(16,11,7,0.9)', 'stroke-width': 2}));
+    const hot = i => e.bracket && i + 1 >= e.bracket.from && i + 1 <= e.bracket.to;
+    return {el, update(t) {
+      const u = S.clamp((t - (e.t_draw === undefined ? e.t_in : e.t_draw)) / (e.dur || 3), 0, 1) * (n - 1);
+      const k = Math.floor(u), pts = [];
+      for (let i = 0; i <= Math.min(k, n - 1); i++) pts.push(X(i) + ',' + Y(loss[i]));
+      if (k < n - 1) { const f = u - k; pts.push((X(k) + (X(k + 1) - X(k)) * f) + ',' + (Y(loss[k]) + (Y(loss[k + 1]) - Y(loss[k])) * f)); }
+      path.setAttribute('points', pts.join(' '));
+      if (e.readout) { const b = Math.min(n - 1, Math.max(0, Math.round(u))); t2.textContent = (e.subtitle || '') + '  \u00b7  book ' + (b + 1) + '  ' + '\u2605'.repeat(e.ratings[b]) + '\u2606'.repeat(5 - e.ratings[b]); }
+      const flashing = e.flash_t !== undefined && t >= e.flash_t && t < e.flash_t + 1.2 && Math.floor((t - e.flash_t) * 6) % 2 === 0;
+      dots.forEach((d, i) => { d.style.display = i <= u + 1e-6 ? 'inline' : 'none'; d.setAttribute('fill', hot(i) && (flashing || u >= e.bracket.to - 1) ? '#C8452F' : '#D9B25F'); });
+      const showB = e.bracket && u >= e.bracket.to - 1;
+      if (band) { band.style.display = showB ? 'inline' : 'none'; band.setAttribute('fill-opacity', flashing ? 0.30 : 0.12); btxt.forEach(b => b.style.display = showB ? 'inline' : 'none'); }
+      if (marker) { const on = u >= e.marker.at - 1; marker.style.display = on ? 'inline' : 'none'; mtxt.style.display = on ? 'inline' : 'none'; }
+      path.setAttribute('stroke', flashing ? '#C8452F' : '#D9B25F');
+    }};
+  },
+  meter(e) {  // vertical seal-integrity meter: {label, keys: [{t, v}] 0-100, warn=40}
+    const el = div('w panel'); place(el, e); el.dataset.box = e.id;
+    const lab = div('lab readable', el, e.label || 'seal integrity'), num = div('num readable', el, '100 %');
+    Object.assign(lab.style, {position: 'absolute', left: '12px', right: '12px', top: '8px', height: '48px', lineHeight: '48px', textAlign: 'center'});
+    S.fit(lab, Math.max(36, e.label_px || 36), 36);
+    Object.assign(num.style, {position: 'absolute', left: '12px', right: '12px', bottom: '10px', height: '44px', lineHeight: '44px', textAlign: 'center', fontSize: '36px'});
+    const tr = div('track', el); Object.assign(tr.style, {left: '50%', marginLeft: '-9px', width: '18px', top: '64px', bottom: '64px'});
+    const fill = div('fill', tr); fill.style.top = 'auto'; fill.style.width = '100%';
+    const segs = div('', tr); segs.style.cssText = 'position:absolute;inset:0;background:repeating-linear-gradient(0deg, transparent 0 14px, rgba(16,11,7,0.85) 14px 17px)';
+    return {el, update(t) {
+      const v = S.clamp(S.keyed(e.keys, t, 'v'), 0, 100), low = v < (e.warn || 40);
+      fill.style.height = v + '%'; fill.style.background = low ? 'var(--alert)' : 'var(--gold)';
+      num.textContent = Math.round(v) + ' %'; num.className = 'num readable ' + (low ? 'red' : 'cyan');
+      el.className = 'w panel' + (low ? ' red' : '');
+    }};
+  },
+  chat(e) {  // red whisper bubble: {name, words: [{w, s}], font_px=36, min_px=24}
+    const el = div('w panel red'); place(el, e); el.dataset.box = e.id; el.style.borderRadius = '18px';
+    const nm = div('lab readable red', el, e.name || 'unknown'); Object.assign(nm.style, {position: 'absolute', left: '22px', top: '10px', right: '22px', fontSize: '36px', lineHeight: '44px'});
+    const body = div('readable', el); Object.assign(body.style, {position: 'absolute', left: '22px', right: '22px', top: '48px', bottom: '16px', lineHeight: '1.28', overflow: 'hidden', color: '#F3DED5'});
+    body.textContent = e.words.map(w => w.w).join(' ');
+    const px = S.fit(body, Math.max(36, e.font_px || 36), Math.max(36, e.min_px || 36));
+    const tail = div('', el); tail.style.cssText = 'position:absolute;left:46px;bottom:-22px;width:0;height:0;border-left:16px solid transparent;border-right:16px solid transparent;border-top:22px solid rgba(200,69,47,0.75)';
+    return {el, update(t) {
+      const said = e.words.filter(w => t >= w.s).map(w => w.w);
+      body.textContent = said.join(' ') + (Math.floor(t * 2.4) % 2 === 0 ? ' \u2588' : '');
+    }};
+  },
+  loadbar(e) {  // {label, keys: [{t, v}] 0-100, label_px=30}: label, slim gold track, mono percent
+    const el = div('w panel'); place(el, e); el.dataset.box = e.id;
+    const fs = Math.max(36, e.label_px || 36), pad = 20;
+    const lab = div('lab readable', el, e.label || 'loading'), num = div('num readable gold', el, '100 %');
+    Object.assign(num.style, {position: 'absolute', right: pad + 'px', top: '12px', fontSize: fs + 'px', lineHeight: (fs * 1.3) + 'px'});
+    num.style.width = (num.scrollWidth + 2) + 'px';
+    Object.assign(lab.style, {position: 'absolute', left: pad + 'px', top: '12px', width: (e.w - 3 * pad - num.offsetWidth) + 'px',
+                              height: (fs * 1.3) + 'px', lineHeight: (fs * 1.3) + 'px', fontFamily: '"JB", monospace', fontWeight: 400});
+    S.fit(lab, fs, 36);
+    const tr = div('track', el); Object.assign(tr.style, {left: pad + 'px', right: pad + 'px', bottom: '22px', height: '4px'});
+    const fill = div('fill', tr);
+    return {el, update(t) {
+      const v = S.clamp(S.keyed(e.keys, t, 'v'), 0, 100);
+      fill.style.width = v + '%';
+      num.textContent = String(Math.floor(v)).padStart(3, '\u2007') + ' %';
+      num.className = 'num readable ' + (v >= 100 ? 'bone' : 'gold');
+    }};
+  },
+  toast(e) {  // {text, level: 'warn'|'alert', font_px=30}
+    const red = e.level === 'alert' ? ' red' : '';
+    const el = div('w panel' + red); place(el, e); el.dataset.box = e.id;
+    const tx = div('lab readable' + (red ? ' red' : ' cyan'), el, (red ? '\u25B2  ' : '\u2022  ') + e.text);
+    Object.assign(tx.style, {position: 'absolute', left: '22px', right: '24px', top: '0', bottom: '0', display: 'flex', alignItems: 'center'});
+    S.fit(tx, Math.max(36, e.font_px || 36), 36);
+    return {el, update(t) { el.style.opacity = red && Math.floor((t - e.t_in) * 4) % 2 ? 0.75 : 1; }};
+  },
+  heat(e) {  // attention heatmap: {label, rows=6, cols=10, seed, color: 'gold'|'red', rate=3}
+    const el = div('w panel' + (e.color === 'red' ? ' red' : '')); place(el, e); el.dataset.box = e.id;
+    const lab = div('lab readable', el, e.label || 'attn'); Object.assign(lab.style, {position: 'absolute', left: '18px', right: '18px', top: '8px', height: '48px', lineHeight: '48px'});
+    S.fit(lab, 36, 36);
+    const R = e.rows || 6, C = e.cols || 10, r = S.rng(e.seed || 3), cells = [], ph = [];
+    const gw = e.w - 36, gh = e.h - 76, cw = gw / C, ch = gh / R;
+    const col = e.color === 'red' ? '200,69,47' : '217,178,95';
+    for (let i = 0; i < R * C; i++) {
+      const c = div('', el); Object.assign(c.style, {position: 'absolute', left: (18 + (i % C) * cw + 2) + 'px', top: (64 + Math.floor(i / C) * ch + 2) + 'px',
+        width: (cw - 4) + 'px', height: (ch - 4) + 'px', borderRadius: '3px'});
+      cells.push(c); ph.push([r() * 6.28, 0.6 + r() * 1.8, r()]);
+    }
+    return {el, update(t) {
+      const k = (t - e.t_in) * (e.rate || 3);
+      cells.forEach((c, i) => { const [p, f, b] = ph[i]; const v = Math.max(0, Math.min(1, 0.15 + 0.85 * Math.pow(0.5 + 0.5 * Math.sin(k * f + p), 3) * (0.4 + b)));
+        c.style.background = `rgba(${col},${v.toFixed(3)})`; });
+    }};
+  },
+  // ---------------------------------------------------------------- v4 widgets (the user v3 feedback: linear animations, geometry)
+  weave(e) {  // 'weave in progress': {title, nodes:[{bk, name, ev}], keys:[{t, v}] dot position (node index, float)}
+    const el = div('w panel'); place(el, e); el.dataset.box = e.id;
+    const tb = div('tb', el); tb.style.fontSize = '36px'; const dots = div('dots', tb); dots.innerHTML = '<i></i><i></i><i></i>';
+    const ttl = document.createElement('span'); ttl.textContent = e.title || 'weave \u00b7 in progress'; tb.appendChild(ttl);
+    const NS = 'http://www.w3.org/2000/svg', N = e.nodes.length, L = 44, R = e.w - 44, ry = 52 + 34;
+    const svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', e.w); svg.setAttribute('height', e.h);
+    svg.style.cssText = 'position:absolute;left:0;top:0'; el.appendChild(svg);
+    const mk = (tag, a) => { const q = document.createElementNS(NS, tag); for (const k in a) q.setAttribute(k, a[k]); svg.appendChild(q); return q; };
+    const X = i => L + (R - L) * i / (N - 1);
+    mk('line', {x1: L, y1: ry, x2: R, y2: ry, stroke: '#EFE6D2', 'stroke-opacity': 0.22, 'stroke-width': 2});
+    const done = mk('line', {x1: L, y1: ry, x2: L, y2: ry, stroke: '#D9B25F', 'stroke-width': 3});
+    const bw = (R - L) / (N - 1) - 16;
+    const nodes = e.nodes.map((n, i) => mk('circle', {cx: X(i), cy: ry, r: 8, fill: 'rgba(16,11,7,0.9)', stroke: '#EFE6D2', 'stroke-opacity': 0.5, 'stroke-width': 2}));
+    const bars = e.nodes.map((n, i) => { mk('rect', {x: X(i) - bw / 2, y: ry + 22, width: bw, height: 5, rx: 2, fill: '#EFE6D2', 'fill-opacity': 0.14});
+                                          return mk('rect', {x: X(i) - bw / 2, y: ry + 22, width: 0, height: 5, rx: 2, fill: '#D9B25F'}); });
+    const halo = mk('circle', {cx: L, cy: ry, r: 14, fill: 'none', stroke: '#D9B25F', 'stroke-width': 2});
+    const dot = mk('circle', {cx: L, cy: ry, r: 7, fill: '#EFE6D2'}); dot.style.filter = 'drop-shadow(0 0 8px rgba(239,230,210,0.9))';
+    const txt = div('lab readable', el); txt.dataset.box = e.id + ':ev';
+    Object.assign(txt.style, {position: 'absolute', left: '28px', right: '28px', top: (ry + 40) + 'px', height: '54px', lineHeight: '54px', fontSize: '36px'});
+    const label = n => `bk ${n.bk} \u00b7 ${n.name} \u2014 ${n.ev}`;
+    // fit check: the longest event line must fit at 36 px
+    let longest = e.nodes.reduce((a, n) => (label(n).length > a.length ? label(n) : a), ''); txt.textContent = longest; S.fit(txt, 36, 36);
+    if (txt.dataset.fitfail) el.dataset.fitfail = '1';
+    return {el, update(t) {
+      const v = S.clamp(S.keyed(e.keys, t, 'v'), 0, N - 1), cx = L + (R - L) * v / (N - 1);
+      done.setAttribute('x2', cx); dot.setAttribute('cx', cx); halo.setAttribute('cx', cx);
+      const cur = Math.min(N - 1, Math.floor(v + 0.12));
+      nodes.forEach((c, i) => { const lit = i <= v + 0.12; c.setAttribute('fill', lit ? '#D9B25F' : 'rgba(16,11,7,0.9)');
+        c.setAttribute('stroke-opacity', lit ? 1 : 0.5); c.setAttribute('r', i === cur ? 10 : 8); });
+      bars.forEach((b, i) => { const p = i < N - 1 ? S.clamp(v - i, 0, 1) : (e.last_progress === undefined ? S.clamp(v - i, 0, 1) : e.last_progress);
+        b.setAttribute('width', bw * p); });
+      const ph = (t * 2.18) % 1; halo.setAttribute('r', 10 + 10 * ph); halo.setAttribute('stroke-opacity', 1 - ph);
+      const n = e.nodes[cur]; let s = label(n);
+      if (n.running) s = s.replace('\u2026', '') + ['', '.', '..', '...'][Math.floor(t * 3) % 4];
+      txt.textContent = s; txt.style.color = n.running ? 'var(--alert)' : 'var(--bone)';
+    }};
+  },
+  card(e) {  // lore card: {kicker, title, body}
+    const el = div('w panel'); place(el, e); el.dataset.box = e.id;
+    const k = div('lab readable gold', el, e.kicker || ''), ti = div('lab readable', el, e.title || ''), b = div('lab readable', el, e.body || '');
+    Object.assign(k.style, {position: 'absolute', left: '30px', right: '24px', top: '12px', height: '50px', lineHeight: '50px', fontFamily: '"JB", monospace', fontWeight: 400, letterSpacing: '0.06em'});
+    Object.assign(ti.style, {position: 'absolute', left: '30px', right: '24px', top: '64px', height: '56px', lineHeight: '54px', fontWeight: 650});
+    Object.assign(b.style, {position: 'absolute', left: '30px', right: '24px', top: '122px', height: '52px', lineHeight: '52px', fontWeight: 400});
+    S.fit(k, 36, 36); S.fit(ti, 44, 36); S.fit(b, 36, 36);
+    const bar = div('', el); bar.style.cssText = 'position:absolute;left:12px;top:16px;width:3px;background:var(--gold);border-radius:2px';
+    return {el, update(t) {
+      const a = t - e.t_in; bar.style.height = (S.easeOut(S.clamp(a / 0.45, 0, 1)) * (e.h - 32)) + 'px';
+      [k, ti, b].forEach((q, i) => { q.style.opacity = S.clamp((a - 0.12 - 0.14 * i) / 0.25, 0, 1); });
+    }};
+  },
+  rings(e) {  // rings drawing around the a ring + text orbiting on the ring: {cx, cy, r, text, rate}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', 1920); svg.setAttribute('height', 1080); el.appendChild(svg);
+    const mk = (tag, a, p = svg) => { const q = document.createElementNS(NS, tag); for (const k in a) q.setAttribute(k, a[k]); p.appendChild(q); return q; };
+    const rs = [e.r * 1.04, e.r * 1.13, e.r * 1.27].map((r, i) => mk('circle', {cx: e.cx, cy: e.cy, r, fill: 'none', stroke: i === 1 ? '#D9B25F' : '#EFE6D2',
+      'stroke-opacity': i === 1 ? 1 : 0.8, 'stroke-width': i === 1 ? 5 : 3, 'stroke-dasharray': i === 2 ? '3 9' : 'none'}));
+    rs.forEach(c => c.style.filter = 'drop-shadow(0 0 3px rgba(16,11,7,0.95)) drop-shadow(0 0 8px rgba(16,11,7,0.6))');
+    const g = mk('g', {}); const ticks = [];
+    for (let i = 0; i < 7; i++) ticks.push(mk('line', {stroke: '#D9B25F', 'stroke-width': 3}, g));
+    const id = 'orb' + e.id, R = e.r * (e.tr || 1.2);  // tr < 1: text runs inside the rim (the ring fills the frame)
+    mk('path', {id, d: `M ${e.cx - R},${e.cy} a ${R},${R} 0 1,1 ${2 * R},0 a ${R},${R} 0 1,1 ${-2 * R},0`, fill: 'none'});
+    const tx = mk('text', {'font-size': 36, fill: '#D9B25F', 'font-family': 'JB, monospace', 'paint-order': 'stroke', stroke: 'rgba(16,11,7,0.85)', 'stroke-width': 7});
+    const tp = mk('textPath', {href: '#' + id}, tx); tp.textContent = e.text || '';
+    return {el, update(t) {
+      const a = t - e.t_in, u = S.easeOut(S.clamp(a / (e.build || 0.5), 0, 1));  // v5: e.build (slower draw-on)
+      rs.forEach((c, i) => { const L = 2 * Math.PI * c.getAttribute('r'); c.style.strokeDasharray = i === 2 ? '3 9' : `${L * u} ${L}`; });
+      const rot = a * 14 + (e.rot0 || -90);
+      ticks.forEach((q, i) => { const th = (rot + i * 360 / 7) * Math.PI / 180, r1 = e.r * 1.09, r2 = e.r * 1.17;
+        q.setAttribute('x1', e.cx + r1 * Math.cos(th)); q.setAttribute('y1', e.cy + r1 * Math.sin(th));
+        q.setAttribute('x2', e.cx + r2 * Math.cos(th)); q.setAttribute('y2', e.cy + r2 * Math.sin(th)); q.style.opacity = u; });
+      tp.setAttribute('startOffset', ((a * (e.rate || 160)) % (2 * Math.PI * R)) + 'px'); tx.style.opacity = S.clamp((a - 0.3 - 0.6 * ((e.build || 0.5) - 0.5)) / 0.3, 0, 1);
+    }};
+  },
+  stitch(e) {  // v5: a thin gold thread drawing itself across the frame + small running-stitch diamonds, no text: {x0, x1, y, sag, color, dur}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', 1920); svg.setAttribute('height', 1080); el.appendChild(svg);
+    const mk = (tag, a, p = svg) => { const q = document.createElementNS(NS, tag); for (const k in a) q.setAttribute(k, a[k]); p.appendChild(q); return q; };
+    const col = e.color === 'red' ? '#C8452F' : '#D9B25F', x0 = e.x0 ?? 96, x1 = e.x1 ?? 1824, y = e.y, sag = e.sag ?? 10;
+    svg.style.filter = 'drop-shadow(0 0 2px rgba(16,11,7,0.95)) drop-shadow(0 0 6px rgba(16,11,7,0.5))';
+    const path = mk('path', {d: `M ${x0},${y} Q ${(x0 + x1) / 2},${y + 2 * sag} ${x1},${y}`, fill: 'none', stroke: col, 'stroke-width': 2.5, 'stroke-linecap': 'round'});
+    const n = Math.max(2, Math.round((x1 - x0) / 150)), ds = [];
+    for (let i = 0; i <= n; i++) { const u = i / n, x = x0 + (x1 - x0) * u, yy = (1 - u) * (1 - u) * y + 2 * u * (1 - u) * (y + 2 * sag) + u * u * y;
+      ds.push([u, mk('rect', {x: x - 6, y: yy - 6, width: 12, height: 12, transform: `rotate(45 ${x} ${yy})`, fill: 'rgba(16,11,7,0.85)', stroke: col, 'stroke-width': 2})]); }
+    let L = 0;
+    return {el, update(t) {
+      if (!L) L = path.getTotalLength();
+      const u = S.easeInOut ? S.easeInOut(S.clamp((t - e.t_in) / (e.dur || 2.4), 0, 1)) : S.easeOut(S.clamp((t - e.t_in) / (e.dur || 2.4), 0, 1));
+      path.style.strokeDasharray = `${L * u} ${L}`;
+      ds.forEach(([v, d]) => { d.style.opacity = S.clamp((u - v) * 8, 0, 1); });
+    }};
+  },
+  beam(e) {  // v5: a beam of light from the sword tip: {cx, cy, keys:[{t, a (deg, 0 = right, -90 = up), w (px), v (0-1)}]}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', 1920); svg.setAttribute('height', 1080); el.appendChild(svg);
+    const mk = (tag, a) => { const q = document.createElementNS(NS, tag); for (const k in a) q.setAttribute(k, a[k]); svg.appendChild(q); return q; };
+    const glow = mk('line', {x1: e.cx, y1: e.cy, stroke: '#D9B25F', 'stroke-linecap': 'round'});
+    const core = mk('line', {x1: e.cx, y1: e.cy, stroke: '#FFF8EC', 'stroke-linecap': 'round'});
+    const flare = mk('circle', {cx: e.cx, cy: e.cy, fill: '#FFF8EC'});
+    glow.style.filter = 'blur(6px)'; flare.style.filter = 'blur(4px)';
+    return {el, update(t) {
+      const a = S.keyed(e.keys, t, 'a') * Math.PI / 180, w = S.keyed(e.keys, t, 'w'), v = S.clamp(S.keyed(e.keys, t, 'v'), 0, 1);
+      const fl = 0.82 + 0.18 * Math.sin(t * 47.0) * Math.sin(t * 13.3 + 1.7);  // flicker
+      const x2 = e.cx + Math.cos(a) * 2600, y2 = e.cy + Math.sin(a) * 2600;
+      [glow, core].forEach(l => { l.setAttribute('x2', x2); l.setAttribute('y2', y2); });
+      glow.setAttribute('stroke-width', (w * 2.6 * fl).toFixed(1)); glow.style.opacity = (0.55 * v * fl).toFixed(3);
+      core.setAttribute('stroke-width', Math.max(1, w * fl).toFixed(1)); core.style.opacity = (v * (0.7 + 0.3 * fl)).toFixed(3);
+      flare.setAttribute('r', (6 + w * 0.9 * fl).toFixed(1)); flare.style.opacity = (v * fl).toFixed(3);
+    }};
+  },
+  pathtext(e) {  // text flowing along a thread (SVG path): {d, text, speed px/s, color}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', 1920); svg.setAttribute('height', 1080); el.appendChild(svg);
+    const mk = (tag, a, p = svg) => { const q = document.createElementNS(NS, tag); for (const k in a) q.setAttribute(k, a[k]); p.appendChild(q); return q; };
+    const id = 'pt' + e.id, col = e.color === 'red' ? '#C8452F' : '#D9B25F';
+    const path = mk('path', {id, d: e.d, fill: 'none', stroke: col, 'stroke-opacity': 0.55, 'stroke-width': 1.5});
+    const tx = mk('text', {'font-size': 36, fill: e.color === 'red' ? '#E07A62' : '#EFE6D2', 'font-family': 'JB, monospace', 'paint-order': 'stroke', stroke: 'rgba(16,11,7,0.85)', 'stroke-width': 7, dy: -12});
+    const tp = mk('textPath', {href: '#' + id}, tx); tp.textContent = e.text;
+    let L = 0;
+    return {el, update(t) {
+      if (!L) L = path.getTotalLength();
+      const a = t - e.t_in, u = S.easeOut(S.clamp(a / 0.6, 0, 1));
+      path.style.strokeDasharray = `${L * u} ${L}`;
+      tp.setAttribute('startOffset', (L - (a * (e.speed || 220)) % (L + 1400)) + 'px');
+      tx.style.opacity = S.clamp((a - 0.3) / 0.3, 0, 1);
+    }};
+  },
+  links(e) {  // thin lines linking figures: {pts: [[x, y], ...]} drawn one after another
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', 1920); svg.setAttribute('height', 1080); el.appendChild(svg);
+    const mk = (tag, a) => { const q = document.createElementNS(NS, tag); for (const k in a) q.setAttribute(k, a[k]); svg.appendChild(q); return q; };
+    const P = e.pts, segs = [];
+    for (let i = 0; i + 1 < P.length; i++) segs.push(mk('line', {x1: P[i][0], y1: P[i][1], x2: P[i][0], y2: P[i][1], stroke: '#D9B25F', 'stroke-width': 3.5, 'stroke-opacity': 1}));
+    svg.style.filter = 'drop-shadow(0 0 3px rgba(16,11,7,0.95))';
+    const ds = P.map(p => mk('rect', {x: p[0] - 10, y: p[1] - 10, width: 20, height: 20, transform: `rotate(45 ${p[0]} ${p[1]})`, fill: 'rgba(16,11,7,0.85)', stroke: '#D9B25F', 'stroke-width': 2}));
+    return {el, update(t) {
+      const a = t - e.t_in;
+      segs.forEach((s, i) => { const u = S.easeOut(S.clamp((a - 0.15 - 0.3 * i) / 0.35, 0, 1));
+        s.setAttribute('x2', P[i][0] + (P[i + 1][0] - P[i][0]) * u); s.setAttribute('y2', P[i][1] + (P[i + 1][1] - P[i][1]) * u); });
+      ds.forEach((d, i) => d.style.opacity = S.clamp((a - 0.3 * i) / 0.2, 0, 1));
+    }};
+  },
+  brackets(e) {  // targeting brackets that lock NEXT to a face: {keys:[{t,x,y,w,h}] face box, name, status, color}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const red = e.color === 'red', col = red ? 'var(--alert)' : 'var(--gold)';
+    const cs = [0, 1, 2, 3].map(() => { const k = div('tick', el); k.style.borderColor = col; k.style.width = '34px'; k.style.height = '34px'; return k; });
+    const tag = div('tag readable' + (red ? ' red' : ''), el); tag.dataset.box = e.id; tag.style.fontSize = '36px'; tag.style.textTransform = 'none'; tag.style.letterSpacing = '0.02em';
+    const nm = document.createElement('div'); nm.textContent = e.name; nm.style.fontWeight = 650; tag.appendChild(nm);
+    const st = document.createElement('div'); st.className = 'v'; st.style.fontFamily = '"JB", monospace'; st.style.fontWeight = 400; tag.appendChild(st);
+    st.textContent = e.status; const tw = tag.offsetWidth + 6; tag.style.width = tw + 'px';
+    return {el, update(t) {
+      const x = S.keyed(e.keys, t, 'x'), y = S.keyed(e.keys, t, 'y'), w = S.keyed(e.keys, t, 'w'), h = S.keyed(e.keys, t, 'h');
+      const a = t - e.t_in, u = S.easeOut(S.clamp(a / 0.32, 0, 1)), m = 0.22 + 0.9 * (1 - u);
+      const bx = x - m * w, by = y - m * h, bw = w * (1 + 2 * m), bh = h * (1 + 2 * m);
+      [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([rx, ry], i) => { const k = cs[i];
+        Object.assign(k.style, {left: (rx ? bx + bw - 34 : bx) + 'px', top: (ry ? by + bh - 34 : by) + 'px', borderWidth: '0',
+          [rx ? 'borderRightWidth' : 'borderLeftWidth']: '3px', [ry ? 'borderBottomWidth' : 'borderTopWidth']: '3px', opacity: u}); });
+      const th = tag.offsetHeight; const right = bx + bw + 24 + tw <= 1900;
+      tag.style.left = (right ? bx + bw + 24 : Math.max(8, bx - 24 - tw)) + 'px';
+      tag.style.top = S.clamp(by + 0.15 * bh, 8, 1072 - th) + 'px';
+      const n = Math.floor(S.clamp((a - 0.32) * 32, 0, e.status.length));
+      st.textContent = e.status.slice(0, n) + (n < e.status.length ? '\u2588' : '');
+      tag.style.opacity = S.clamp((a - 0.25) / 0.15, 0, 1);
+    }};
+  },
+  micro(e) {  // micro-UI at the frame edges: {items: [{x, y, align, kind: 'tc'|'coord'|'text', text, keys}]}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const its = e.items.map((it, i) => { const d = div('tag readable', el); d.dataset.box = e.id + ':' + i;
+      Object.assign(d.style, {fontSize: '36px', fontFamily: '"JB", monospace', fontWeight: 400, letterSpacing: '0', textTransform: 'none', color: 'var(--bone2)', top: it.y + 'px'});
+      return d; });
+    const p2 = n => String(n).padStart(2, '0');
+    return {el, update(t) {
+      e.items.forEach((it, i) => { const d = its[i]; let s = it.text || '';
+        if (it.kind === 'tc') s = `${p2(Math.floor(t / 60))}:${p2(Math.floor(t % 60))}.${p2(Math.floor((t % 1) * 100))}  f ${String(Math.round(t * 24)).padStart(4, '0')}`;
+        if (it.kind === 'coord') { const lat = S.keyed(it.keys, t, 'v'); s = `${lat.toFixed(2)}\u00b0 N  ${(it.lon || 34.80).toFixed(2)}\u00b0 E`; }
+        d.textContent = s;
+        if (it.align === 'right') { d.style.left = ''; d.style.right = (1920 - it.x) + 'px'; } else d.style.left = it.x + 'px'; });
+    }};
+  },
+  sil(e) {  // gold silhouette (pre-rendered RGBA): {src, keys:[{t, x, y, h, g}], aspect, ih (source px height),
+            //   halo: dark umber backing for contrast, blade: [[x1, y1], [x2, y2], width] crystal sword in source px}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const halo = div('', el); halo.style.cssText = 'position:absolute;border-radius:50%;background:radial-gradient(closest-side, rgba(12,8,5,0.78), rgba(12,8,5,0.45) 60%, rgba(12,8,5,0) 100%)';
+    if (!e.halo) halo.style.display = 'none';
+    const im = document.createElement('img'); im.src = e.src; im.style.position = 'absolute'; el.appendChild(im);
+    const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', 1920); svg.setAttribute('height', 1080);
+    svg.style.position = 'absolute'; svg.style.left = '0'; svg.style.top = '0'; el.appendChild(svg);
+    const mk = (tag, a) => { const q = document.createElementNS(NS, tag); for (const k in a) q.setAttribute(k, a[k]); svg.appendChild(q); return q; };
+    const bglow = mk('polygon', {fill: '#FFF3D6'}), blade = mk('polygon', {fill: '#FFFDF6', stroke: '#F3DFA6', 'stroke-width': 2}), ridge = mk('line', {stroke: '#D9B25F', 'stroke-width': 2});
+    bglow.style.filter = 'blur(10px)';
+    if (!e.blade) svg.style.display = 'none';
+    return {el, update(t) {
+      const x = S.keyed(e.keys, t, 'x'), y = S.keyed(e.keys, t, 'y'), h = S.keyed(e.keys, t, 'h'), g = S.keyed(e.keys, t, 'g') || 1;
+      const w = h * e.aspect;
+      Object.assign(im.style, {left: x + 'px', top: y + 'px', height: h + 'px', width: w + 'px'});
+      const a = t - e.t_in, op = S.clamp(a / 0.4, 0, 1);
+      im.style.opacity = op * (e.op || 0.92);
+      im.style.filter = `brightness(${g.toFixed(3)}) contrast(1.15) drop-shadow(0 0 3px rgba(16,11,7,0.95)) drop-shadow(0 0 ${(14 * g).toFixed(1)}px rgba(240,200,110,0.95)) drop-shadow(0 0 ${(34 * g).toFixed(1)}px rgba(217,178,95,0.6))`;
+      if (e.halo) Object.assign(halo.style, {left: (x - 0.15 * w) + 'px', top: (y - 0.02 * h) + 'px', width: (1.3 * w) + 'px', height: (1.04 * h) + 'px', opacity: op * e.halo});
+      if (e.blade) {
+        const s = h / e.ih, [[ax, ay], [bx, by], bw] = e.blade;
+        const p1 = [x + ax * s, y + ay * s], p2 = [x + bx * s, y + by * s], dx = p2[0] - p1[0], dy = p2[1] - p1[1], L = Math.hypot(dx, dy);
+        const nx = -dy / L, ny = dx / L, hw = bw * s / 2;
+        const pts = [[p1[0], p1[1]], [p1[0] + dx * 0.12 + nx * hw, p1[1] + dy * 0.12 + ny * hw], [p2[0] + nx * hw, p2[1] + ny * hw],
+                     [p2[0] - nx * hw, p2[1] - ny * hw], [p1[0] + dx * 0.12 - nx * hw, p1[1] + dy * 0.12 - ny * hw]];
+        const ps = pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+        blade.setAttribute('points', ps); bglow.setAttribute('points', ps);
+        ridge.setAttribute('x1', p1[0]); ridge.setAttribute('y1', p1[1]); ridge.setAttribute('x2', p2[0]); ridge.setAttribute('y2', p2[1]);
+        svg.style.opacity = op; bglow.style.opacity = S.clamp(0.55 * g, 0, 1);
+      }
+    }};
+  },
+  odo(e) {  // accelerating odometer: {label, keys:[{t, v}] v = log10(count), inf_t, nan_t}
+    const el = div('w panel'); place(el, e); el.dataset.box = e.id;
+    const lab = div('lab readable', el, e.label || 'threads woven'), num = div('num readable gold', el);
+    Object.assign(lab.style, {position: 'absolute', left: '22px', right: '22px', top: '10px', height: '48px', lineHeight: '48px', fontSize: '36px'});
+    Object.assign(num.style, {position: 'absolute', left: '22px', right: '22px', top: '58px', height: '72px', lineHeight: '72px', fontSize: '60px', textAlign: 'left'});
+    const fmt = v => Math.floor(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '\u2009');
+    return {el, update(t) {
+      let s, cls = 'gold';
+      if (e.nan_t !== undefined && t >= e.nan_t) { s = 'NaN'; cls = 'red'; el.className = 'w panel red'; }
+      else if (e.inf_t !== undefined && t >= e.inf_t) s = '\u221e';
+      else s = fmt(Math.pow(10, S.keyed(e.keys, t, 'v')));
+      num.textContent = s; num.className = 'num readable ' + cls;
+      if (cls === 'red') num.style.transform = `translate(${(Math.floor(t * 24) % 3 - 1) * 4}px, 0)`;
+    }};
+  },
+  streaks(e) {  // light streaks from the sword tip + hairline cracks across the HUD: {cx, cy, keys:[{t, v}] 0-1, seed, crack_t}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', 1920); svg.setAttribute('height', 1080); el.appendChild(svg);
+    const mk = (tag, a) => { const q = document.createElementNS(NS, tag); for (const k in a) q.setAttribute(k, a[k]); svg.appendChild(q); return q; };
+    const r = S.rng(e.seed || 19), rays = [], cracks = [];
+    for (let i = 0; i < 28; i++) { const th = r() * Math.PI * 2; rays.push([th, mk('line', {x1: e.cx, y1: e.cy, x2: e.cx, y2: e.cy, stroke: '#FFF3D6', 'stroke-width': 1 + r() * 2.5, 'stroke-linecap': 'round'}), r()]); }
+    const starts = [[0, 0], [1920, 0], [0, 1080], [1920, 1080], [960, 0], [0, 540], [1920, 540], [960, 1080]];
+    starts.forEach(([sx, sy], i) => { const pts = [[sx, sy]]; let x = sx, y = sy, dir = Math.atan2(540 - sy, 960 - sx);
+      for (let k = 0; k < 14; k++) { dir += (r() - 0.5) * 0.9; x += Math.cos(dir) * 46; y += Math.sin(dir) * 46; pts.push([x, y]); }
+      cracks.push([pts, mk('polyline', {fill: 'none', stroke: '#EFE6D2', 'stroke-width': 1.4, 'stroke-opacity': 0.85})]); });
+    return {el, update(t) {
+      const v = S.clamp(S.keyed(e.keys, t, 'v'), 0, 1);
+      rays.forEach(([th, l, q]) => { const L = 200 + 1500 * v * (0.4 + 0.6 * q);
+        l.setAttribute('x2', e.cx + Math.cos(th) * L); l.setAttribute('y2', e.cy + Math.sin(th) * L);
+        l.style.opacity = (v * (0.25 + 0.5 * q) * (0.75 + 0.25 * Math.sin(t * 19 + q * 9))).toFixed(3); });
+      cracks.forEach(([pts, pl], i) => { const n = Math.max(1, Math.round(pts.length * S.clamp(v * 1.2 - i * 0.05, 0, 1)));
+        pl.setAttribute('points', pts.slice(0, n).map(p => p.join(',')).join(' '));
+        pl.setAttribute('stroke', e.crack_t !== undefined && t >= e.crack_t ? '#C8452F' : '#EFE6D2'); });
+    }};
+  },
+  flash(e) {  // hard white flash (1-2 frames, master.md: <= 3 full-screen flashes per second)
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px;background:#FFF8EC';
+    return {el, update(t) {}};
+  },
+  shock(e) {  // shockwave ring: {cx, cy, dur}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', 1920); svg.setAttribute('height', 1080); el.appendChild(svg);
+    const c1 = document.createElementNS(NS, 'circle'), c2 = document.createElementNS(NS, 'circle');
+    [c1, c2].forEach(c => { c.setAttribute('cx', e.cx); c.setAttribute('cy', e.cy); c.setAttribute('fill', 'none'); svg.appendChild(c); });
+    return {el, update(t) {
+      const u = S.clamp((t - e.t_in) / (e.dur || 0.7), 0, 1), k = S.easeOut(u);
+      c1.setAttribute('r', 20 + 1500 * k); c1.setAttribute('stroke', '#FFF3D6'); c1.setAttribute('stroke-width', 40 * (1 - u) + 2); c1.style.opacity = 1 - u;
+      c2.setAttribute('r', 10 + 1100 * k); c2.setAttribute('stroke', '#D9B25F'); c2.setAttribute('stroke-width', 12 * (1 - u) + 1); c2.style.opacity = (1 - u) * 0.8;
+    }};
+  },
+  invert(e) {  // huge inverted-contrast word(s) (dark on a bone slab) for a few frames: {text} or {lines: [..]} (v4: one slab, one fitted line each)
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const L = e.lines || [e.text], n = L.length, lh = n > 1 ? 330 : 460, sh = n > 1 ? lh * n + 40 : 460;
+    const slab = div('', el); slab.style.cssText = `position:absolute;left:120px;top:${Math.round((1080 - sh) / 2)}px;width:1680px;height:${sh}px;background:#EFE6D2`;
+    L.forEach((t, i) => { const w = div('readable', slab, t); w.dataset.box = e.id + (n > 1 ? ':' + i : '');
+      const top = (n > 1 ? 20 : 0) + i * lh + 10, h = lh - 20;
+      Object.assign(w.style, {position: 'absolute', left: '40px', right: '40px', top: top + 'px', height: h + 'px', textAlign: 'center',
+        fontFamily: 'Inter', fontWeight: 900, color: '#120C08', letterSpacing: '-0.02em', whiteSpace: 'nowrap', lineHeight: (h - 8) + 'px', paddingTop: '4px', boxSizing: 'border-box', overflow: 'hidden'});
+      S.fit(w, n > 1 ? 245 : 300, 120); });  // Inter's content area is ~1.21 em: keep it inside the line box
+    return {el, update(t) {}};
+  },
+  hud(e) {  // corner brackets around the frame: {inset=40, len=70, color}
+    const el = div('w'); el.style.cssText = 'left:0;top:0;width:1920px;height:1080px';
+    const ins = e.inset || 48, len = e.len || 44, c = e.color === 'red' ? 'var(--alert)' : 'var(--gold2)';
+    [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([rx, ry]) => {
+      const k = div('tick', el); Object.assign(k.style, {width: len + 'px', height: len + 'px', borderColor: c,
+        [rx ? 'right' : 'left']: ins + 'px', [ry ? 'bottom' : 'top']: ins + 'px',
+        [rx ? 'borderRightWidth' : 'borderLeftWidth']: '1.5px', [ry ? 'borderBottomWidth' : 'borderTopWidth']: '1.5px'}); });
+    return {el, update(t) {}};
+  },
+};
+
+window.setSpec = function (spec) {
+  const stage = document.getElementById('stage');
+  stage.innerHTML = '';
+  WIDGETS = (spec.events || []).map(e => {
+    const b = BUILD[e.type];
+    if (!b) throw new Error('unknown widget type ' + e.type);
+    const w = b(e); w.e = e; stage.appendChild(w.el); w.el.style.visibility = 'hidden';
+    return w;
+  });
+  return true;
+};
+
+window.renderAt = function (t) {
+  for (const w of WIDGETS) {
+    const e = w.e, on = t >= e.t_in && t < e.t_out + (e.hard ? 0 : (e.fade || POP_OUT));
+    w.el.style.visibility = on ? 'visible' : 'hidden';
+    if (!on) continue;
+    w.el.style.opacity = '';  // widgets may set their own opacity in update(); never inherit last frame's value
+    w.update(t);
+    if (GEO.has(e.type) && !e.hard && t >= e.t_out) { w.el.style.opacity = Math.max(0, 1 - (t - e.t_out) / (e.fade || POP_OUT)); continue; }  // v5: e.fade  // v4: geometry fades out
+    if (e.type === 'bbox' || e.type === 'hud' || GEO.has(e.type) || e.hard) continue;
+    const a = t - e.t_in, z = t - e.t_out;
+    let op = parseFloat(w.el.style.opacity || 1), sc = 1, dx = 0;
+    let dy = 0;
+    if (a < POP_IN) { const u = S.easeOut(a / POP_IN); sc = 0.985 + 0.015 * u; dy = 8 * (1 - u); op = Math.min(op, u); }
+    if (e.glitch && a < 2 / 24) dx = (Math.floor(a * 24) % 2 ? -6 : 6);   // two-frame jitter only on alert events
+    if (z >= 0) op = Math.min(op, 1 - z / POP_OUT);
+    w.el.style.opacity = op;
+    w.el.style.transform = `translate(${dx}px, ${dy}px) scale(${sc})`;
+  }
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "project": "__SLUG__",
+  "created": null,
+  "updated": null,
+  "config": {},
+  "stages": {},
+  "gates": {
+    "song_take": {"enabled": true, "status": "not_reached"},
+    "looks": {"enabled": false, "status": "disabled"},
+    "final_cut": {"enabled": true, "status": "not_reached"}
+  },
+  "assets": {}
+}

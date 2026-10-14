@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Word-by-word kinetic lyrics + noun flash cards (slopcore mode). Spec:
+     {fps, hold_max, words: [{w, s, e, zone: 'center'|'lower', hook, ghost, fade}], cards: [{t, frames, text}]}
+     Main words slam in on their onset s (scale 118 % -> 100 % over 2 frames, opacity in 1 frame) and hold until the
+     next main word's onset (or e + hold_max). Ghost words (backing vocals in parentheses) show small under the main
+     word. Cards are full-screen 1-2-frame noun flashes (gold serif on black), planned by slopkit.fxplan. -->
+<style>
+  @font-face { font-family: "Anton"; src: url("fonts/Anton-Regular.ttf"); }
+  @font-face { font-family: "Corm"; src: url("fonts/CormorantGaramond-wght.ttf"); font-weight: 300 700; }
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden; }
+  .box { position: absolute; left: 160px; width: 1600px; display: flex; align-items: center; justify-content: center;
+         white-space: nowrap; overflow: hidden; box-sizing: border-box; }
+  #word { height: 260px; font-family: "Anton", "DejaVu Sans Condensed", sans-serif; color: #EFE6D2; letter-spacing: 0.01em;
+          text-transform: uppercase; text-shadow: 0 0 2px #000, 0 0 6px rgba(0, 0, 0, 0.9), 0 4px 14px rgba(0, 0, 0, 0.9), 0 0 48px rgba(24, 14, 4, 0.8); }
+  #word.hook { color: #D9B25F; text-shadow: 0 0 2px #000, 0 0 6px rgba(0, 0, 0, 0.9), 0 4px 14px rgba(0, 0, 0, 0.9), 0 0 48px rgba(24, 14, 4, 0.8); }
+  #ghost { height: 110px; font-family: "Anton", sans-serif; color: rgba(239, 230, 210, 0.5); text-transform: uppercase;
+           text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8); }
+  #card { position: absolute; inset: 0; background: #0B0806; display: none; }
+  #cardtext { top: 390px; height: 300px; font-family: "Corm", serif; font-weight: 600; color: #D4A84B; letter-spacing: 0.04em; }
+</style>
+<script src="common.js"></script>
+</head>
+<body>
+<div id="card"><div id="cardtext" class="box readable" data-box="card"></div></div>
+<div id="word" class="box readable" data-box="word"></div>
+<div id="ghost" class="box" data-box="ghost"></div>
+<script>
+const S = SLOP;
+let SPEC = null, MAIN = [], GHOST = [];
+const ZONE = {center: {y: 410, max: 240, ghostY: 680}, lower: {y: 760, max: 150, ghostY: 960}};
+
+window.setSpec = function (spec) {
+  SPEC = Object.assign({fps: 24, hold_max: 0.8, words: [], cards: []}, spec);
+  MAIN = SPEC.words.filter(w => !w.ghost).sort((a, b) => a.s - b.s);
+  GHOST = SPEC.words.filter(w => w.ghost).sort((a, b) => a.s - b.s);
+  return true;
+};
+
+function current(list, t, hold) {
+  let i = -1;
+  for (let k = 0; k < list.length && list[k].s <= t; k++) i = k;
+  if (i < 0) return null;
+  const w = list[i], next = list[i + 1];
+  const until = Math.min(next ? next.s : Infinity, (w.e === undefined ? w.s + 0.4 : w.e) + hold);
+  return t < until ? {w, until} : null;
+}
+
+window.renderAt = function (t) {
+  const fps = SPEC.fps, word = document.getElementById('word'), ghost = document.getElementById('ghost');
+  const card = SPEC.cards.find(c => t >= c.t - 1e-6 && t < c.t + c.frames / fps - 1e-6);
+  const cardEl = document.getElementById('card');
+  cardEl.style.display = card ? 'block' : 'none';
+  if (card) { const ct = document.getElementById('cardtext'); ct.textContent = card.text; S.fit(ct, 230, 60); }
+  const cur = current(MAIN, t, SPEC.hold_max);
+  if (!cur || card) { word.style.visibility = 'hidden'; }
+  else {
+    const w = cur.w, z = ZONE[w.zone || 'center'];
+    word.style.visibility = 'visible'; word.style.top = (w.y !== undefined ? w.y : z.y) + 'px';  // w.y / w.bx,w.bw: face-aware placement (pipeline/hud2.py)
+    word.style.left = (w.bx !== undefined ? w.bx : 160) + 'px'; word.style.width = (w.bw !== undefined ? w.bw : 1600) + 'px';
+    word.className = 'box readable' + (w.hook ? ' hook' : '');
+    word.textContent = w.w;
+    S.fit(word, z.max, 60);
+    const f = (t - w.s) * fps;
+    let sc = f < 2 ? 1.18 - 0.09 * f : 1, op = f < 1 ? 0.55 + 0.45 * f : 1;
+    if (w.instant) { sc = 1; op = 1; }  // v4: words held back over the climax flash appear complete on the cut, no entrance
+    if (w.fade) {  // coda: soft 120 ms fades instead of slams
+      sc = 1; op = S.clamp((t - w.s) / 0.12, 0, 1) * S.clamp((cur.until - t) / 0.12, 0, 1);
+    }
+    word.style.transform = `scale(${sc})`; word.style.opacity = op;
+  }
+  const g = current(GHOST, t, 0.3);
+  // a backing echo only shows under a main word of its own line (never under the next line's first word)
+  if (!g || card || (cur && g.w.line !== undefined && cur.w.line !== g.w.line)) ghost.style.visibility = 'hidden';
+  else {
+    const z = ZONE[(cur && cur.w.zone) || g.w.zone || 'center'];
+    ghost.style.visibility = 'visible'; ghost.style.top = (g.w.gy !== undefined ? g.w.gy : z.ghostY - 55) + 'px';  // v4: face-free spot (pipeline/hud4.py)
+    ghost.style.left = (g.w.gbx !== undefined ? g.w.gbx : 160) + 'px'; ghost.style.width = (g.w.gbw !== undefined ? g.w.gbw : 1600) + 'px';
+    ghost.textContent = g.w.w; S.fit(ghost, Math.round(z.max * 0.6), 30);
+  }
+};
+</script>
+</body>
+</html>

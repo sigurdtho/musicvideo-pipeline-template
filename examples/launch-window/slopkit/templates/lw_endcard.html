@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Launch Window end card (HUD_STYLE §3/§5, final round 2026-10-14): ~12 s after the song, over silence. Every glyph is
+     code. The two outlined 16:9 slots (640x360 at 1920x1080 = 33.3 % of the width, YouTube's default end-screen video
+     element size) are where YouTube's own "video / playlist" elements go: they point to more of the channel's videos.
+     YouTube draws them; the card only leaves the space clear (nothing drawn inside the slots).
+     Spec: {dur, fps, beat, k0} -->
+<style>
+  @font-face { font-family: "Anton"; src: url("fonts/Anton-Regular.ttf"); }
+  @font-face { font-family: "Mono"; src: url("fonts/JetBrainsMono-wght.ttf"); font-weight: 100 800; }
+  @font-face { font-family: "Inter"; src: url("fonts/Inter-wght.ttf"); font-weight: 100 900; }
+  :root { --ink: #F2F4F6; --tint: #9DB4CC; --accent: #FF5A1F; --night: #05070A; }
+  html, body { margin: 0; width: 1920px; height: 1080px; background: var(--night); overflow: hidden; }
+  canvas { position: absolute; left: 0; top: 0; }
+  #all { position: absolute; inset: 0; }
+  .t { position: absolute; box-sizing: border-box; color: var(--ink); white-space: nowrap; overflow: hidden; }
+  .mono { font-family: "Mono", monospace; font-weight: 500; text-transform: uppercase; }
+  #title { left: 460px; width: 1000px; top: 54px; height: 200px; text-align: center; font-family: "Anton"; font-size: 132px;
+           line-height: 200px; letter-spacing: 0.04em; }
+  #hook { left: 460px; width: 1000px; top: 272px; height: 34px; text-align: center; font-size: 22px; line-height: 34px;
+          letter-spacing: 0.14em; color: var(--tint); }
+  #hook .acc { color: var(--accent); }
+  #body { left: 400px; width: 1120px; top: 322px; height: 128px; text-align: center; font-family: "Inter"; font-weight: 400;
+          font-size: 26px; line-height: 1.4; white-space: normal; color: var(--ink); }
+  .cap { top: 534px; height: 40px; font-size: 24px; line-height: 40px; letter-spacing: 0.12em; }
+  .cap .acc { color: var(--accent); }
+  #c1 { left: 224px; width: 640px; }
+  #c2 { left: 1056px; width: 640px; }
+  #counter { right: 124px; top: 66px; height: 60px; width: 420px; text-align: right; font-size: 40px; line-height: 60px; }
+  #phase { right: 124px; top: 128px; height: 30px; width: 420px; text-align: right; font-size: 18px; line-height: 30px; color: var(--tint); }
+  #bar { left: 124px; top: 70px; height: 30px; width: 420px; font-size: 18px; line-height: 30px; color: var(--tint); }
+  #rail { right: 124px; top: 190px; width: 330px; height: 260px; font-size: 16px; line-height: 26px; text-align: right;
+          color: rgba(157, 180, 204, 0.75); white-space: pre; }
+  #orbcap { left: 124px; top: 452px; width: 330px; height: 26px; font-size: 15px; line-height: 26px; color: var(--tint); }
+  #anchor { left: 124px; top: 984px; height: 40px; width: 900px; font-family: "Inter"; font-weight: 600; font-size: 20px;
+            letter-spacing: 0.18em; line-height: 40px; text-transform: uppercase; }
+  #thanks { right: 124px; top: 984px; height: 40px; width: 700px; text-align: right; font-size: 20px; line-height: 40px;
+            letter-spacing: 0.12em; color: var(--tint); }
+</style>
+<script src="common.js"></script>
+</head>
+<body>
+<canvas id="bg" width="1920" height="1080"></canvas>
+<div id="all">
+  <div id="bar" class="t mono" data-box="bar"></div>
+  <div id="counter" class="t mono" data-box="counter"></div>
+  <div id="phase" class="t mono" data-box="phase">NEXT WINDOW · EARTH → MARS</div>
+  <div id="rail" class="t mono" data-box="rail"></div>
+  <div id="orbcap" class="t mono" data-box="orbcap">SYNODIC CYCLE · ~780 DAYS</div>
+  <div id="title" class="t readable" data-box="title">LAUNCH WINDOW</div>
+  <div id="hook" class="t mono" data-box="hook">HERE IT COMES · HERE WE GO · <span class="acc">HERE WE ARE</span></div>
+  <div id="body" class="t readable" data-box="body">AI-made, locally on one GPU. The rocket is SpaceX's Starship, shown as a fan tribute; the robot is an original design. Not affiliated with or endorsed by SpaceX or any space agency. The launch window is real: every ~26 months.</div>
+  <div id="c1" class="t mono cap readable" data-box="c1"><span class="acc">▶</span> WATCH NEXT</div>
+  <div id="c2" class="t mono cap readable" data-box="c2"><span class="acc">▶</span> MORE FROM THE CHANNEL</div>
+  <div id="anchor" class="t" data-box="anchor">Launch Window · fan tribute · AI music video</div>
+  <div id="thanks" class="t mono" data-box="thanks">THANKS FOR WATCHING</div>
+</div>
+<script>
+const S = SLOP;
+const COL = {ink: '#F2F4F6', tint: '#9DB4CC', accent: '#FF5A1F', night: '#05070A'};
+const SLOTS = [[224, 584, 640, 360], [1056, 584, 640, 360]];  // x, y, w, h: YouTube end-screen video elements
+let SPEC = null;
+window.setSpec = function (spec) { SPEC = spec; };
+
+function bracket(ctx, x, y, w, h, L, col, lw) {
+  ctx.strokeStyle = col; ctx.lineWidth = lw;
+  for (const [cx, cy, sx, sy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
+    ctx.beginPath(); ctx.moveTo(cx + sx * L, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + sy * L); ctx.stroke(); }
+}
+
+// mini Hohmann fan (as the film's last orbit picture): every 780 days the geometry repeats 48.8 degrees further round
+function orbitMini(ctx, t, pulse) {
+  const cx = 261, cy = 300, au = 82, RE = 1.0, RM = 1.524, A = (RE + RM) / 2, E = (RM - RE) / (RM + RE), D = Math.PI / 180;
+  const P = (r, a) => [cx + au * r * Math.cos(a), cy - au * r * Math.sin(a)];
+  ctx.lineWidth = 2;
+  for (const [r, c] of [[RE, 'rgba(242,244,246,0.5)'], [RM, 'rgba(157,180,204,0.5)']]) {
+    ctx.strokeStyle = c; ctx.beginPath(); ctx.arc(cx, cy, au * r, 0, 2 * Math.PI); ctx.stroke(); }
+  ctx.fillStyle = COL.ink; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 2 * Math.PI); ctx.fill();
+  const th0 = 200 * D, n = 1 + Math.floor(t / (SPEC.beat * 4)) % 7;  // one more arc per bar, 7 windows
+  for (let i = 0; i < n; i++) {
+    ctx.strokeStyle = i === n - 1 ? COL.accent : 'rgba(157,180,204,0.55)'; ctx.lineWidth = i === n - 1 ? 3 : 2; ctx.beginPath();
+    for (let k = 0; k <= 60; k++) { const nu = Math.PI * k / 60, r = A * (1 - E * E) / (1 + E * Math.cos(nu)), p = P(r, th0 + i * 48.8 * D + nu);
+      k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); }
+    ctx.stroke();
+  }
+  const days = 780 * ((t / SPEC.dur) % 1), e = P(RE, th0 + 2 * Math.PI * days / 365.25), m = P(RM, th0 + 44 * D + 2 * Math.PI * days / 686.98);
+  ctx.fillStyle = COL.ink; ctx.beginPath(); ctx.arc(e[0], e[1], 6 + 2 * pulse, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = COL.tint; ctx.beginPath(); ctx.arc(m[0], m[1], 5, 0, 2 * Math.PI); ctx.fill();
+}
+
+function frame(ctx, t) {
+  const b = Math.floor(t / SPEC.beat), ph = t / SPEC.beat - b, down = b % 4 === 0;
+  const pulse = (down ? 1 : 0.45) * Math.max(0, 1 - ph * 3);
+  ctx.clearRect(0, 0, 1920, 1080);
+  // faint plotting grid, outside the slots
+  ctx.strokeStyle = 'rgba(157,180,204,0.06)'; ctx.lineWidth = 1;
+  for (let x = 96; x <= 1824; x += 48) { ctx.beginPath(); ctx.moveTo(x + 0.5, 54); ctx.lineTo(x + 0.5, 1026); ctx.stroke(); }
+  for (let y = 54; y <= 1026; y += 48) { ctx.beginPath(); ctx.moveTo(96, y + 0.5); ctx.lineTo(1824, y + 0.5); ctx.stroke(); }
+  for (const [x, y, w, h] of SLOTS) { ctx.fillStyle = COL.night; ctx.fillRect(x - 12, y - 12, w + 24, h + 24); }
+  // frame corners breathe on the beat (128 BPM, the film's grid)
+  bracket(ctx, 96, 54, 1728, 972, 56 + 10 * pulse, `rgba(242,244,246,${0.55 + 0.4 * pulse})`, 3);
+  // beat squares under the bar readout
+  for (let k = 0; k < 4; k++) { ctx.fillStyle = b % 4 === k ? (k === 0 ? COL.accent : COL.ink) : 'rgba(157,180,204,0.3)';
+    ctx.fillRect(124 + k * 30, 108, 22, 10); }
+  // title rule: an accent line that sweeps once per bar
+  const u = ((t / (SPEC.beat * 4)) % 1);
+  ctx.fillStyle = 'rgba(157,180,204,0.3)'; ctx.fillRect(560, 260, 800, 2);
+  ctx.fillStyle = COL.accent; ctx.fillRect(560, 259, 800 * S.easeOut(u), 4);
+  orbitMini(ctx, t, pulse);
+  // the two end-screen slots: outline + accent corner brackets; the inside stays empty for YouTube's elements
+  SLOTS.forEach(([x, y, w, h], i) => {
+    ctx.strokeStyle = 'rgba(157,180,204,0.45)'; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    const lit = (b % 2) === i;
+    bracket(ctx, x - 10, y - 10, w + 20, h + 20, 34, lit ? `rgba(255,90,31,${0.6 + 0.4 * pulse})` : 'rgba(242,244,246,0.6)', 3);
+  });
+  // centre divider between the slots: 9 beat ticks that fill bar by bar
+  for (let k = 0; k < 9; k++) { ctx.fillStyle = k <= (b % 9) ? 'rgba(242,244,246,0.55)' : 'rgba(157,180,204,0.18)';
+    ctx.fillRect(950, 600 + k * 38, 20, 4); }
+  // footer: a level strip along the bottom safe edge
+  ctx.fillStyle = 'rgba(157,180,204,0.25)'; ctx.fillRect(96, 978, 1728, 2);
+  ctx.fillStyle = COL.accent; ctx.fillRect(96, 977, 1728 * S.clamp(t / SPEC.dur, 0, 1), 4);
+}
+
+window.renderAt = function (t) {
+  const a = S.clamp(t / 0.75, 0, 1) * S.clamp((SPEC.dur - t) / 0.5, 0, 1);  // fade in 0.75 s, out 0.5 s
+  document.getElementById('all').style.opacity = a;
+  const c = document.getElementById('bg'); c.style.opacity = a;
+  frame(c.getContext('2d'), t);
+  const b = Math.floor(t / SPEC.beat);
+  // the next window's counter keeps ticking from where the film left it (hard digit swap each beat)
+  const k = SPEC.k0 + b;
+  document.getElementById('counter').textContent = `T−790:23:59:${String(Math.max(0, 59 - k)).padStart(2, '0')}`;
+  document.getElementById('bar').textContent = `END · BAR ${String(b >> 2).padStart(3, '0')} · ${(b % 4) + 1}/4`;
+  const rail = ['SONG        2:37', 'TEMPO    128 BPM', 'WINDOW    ~26 MO', 'TRANSFER  ~259 D', 'MADE       1 GPU', 'STATUS        GO'];
+  const r = b % rail.length;
+  document.getElementById('rail').textContent = rail.slice(r).concat(rail.slice(0, r)).join('\n');
+};
+</script>
+</body>
+</html>

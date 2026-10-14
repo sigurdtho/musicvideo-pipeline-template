@@ -1,0 +1,49 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.key
+# outputs and working dirs
+out/
+audio/
+images/
+video/
+overlays/render/
+qc/logs/
+qc/listen/
+qc/review_sync/
+qc/archive/
+manifest.local.json
+.gpu.lock
+envs
+# weights
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.gguf
+*.onnx
+models/
+# media
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.npy
+# fonts are fetched, not vendored (see fonts/SOURCE.txt)
+*.ttf
+*.otf
+# python
+__pycache__/
+*.pyc
+*.bak*

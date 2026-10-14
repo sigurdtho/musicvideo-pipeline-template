@@ -1,0 +1,9 @@
+{
+  "status": "not-run",
+  "gate": false,
+  "weight": "low",
+  "project": "__SLUG__",
+  "markdown": "qc/coherence.md",
+  "note": "A fit check, not a popularity score and not a gate. Run once at the concept stage and again before the style guide is approved.",
+  "runs": []
+}

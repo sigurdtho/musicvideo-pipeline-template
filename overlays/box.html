@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Notice box. Rendered frame-by-frame by pipeline/overlay.py;. Rendered frame-by-frame by pipeline/overlay.py;
+     window.renderAt(t) sets the exact visual state for time t (no wall-clock animation). -->
+<style>
+  @font-face { font-family: "Orbitron"; src: url("fonts/Orbitron-wght.ttf"); font-weight: 400 900; }
+  @font-face { font-family: "JetBrains Mono"; src: url("fonts/JetBrainsMono-wght.ttf"); font-weight: 100 800; }
+  :root {
+    --fill: rgba(11, 42, 111, 0.70);   /* #0B2A6F at ~70% */
+    --border: #59D3FF;
+    --text: #EAF6FF;
+    --gold: #FFD45E;
+    --cyan: #59D3FF;
+  }
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden; }
+  #stage { position: absolute; inset: 0; }
+  .box {
+    position: absolute; box-sizing: border-box;
+    background: var(--fill);
+    border: 2px solid var(--border); border-radius: 6px;
+    box-shadow: 0 0 18px 2px rgba(89, 211, 255, 0.55), 0 0 42px 6px rgba(89, 211, 255, 0.22),
+                inset 0 0 22px rgba(89, 211, 255, 0.18);
+    color: var(--text); font-family: "JetBrains Mono", monospace;
+    padding: 30px 40px 34px; transform-origin: 50% 50%;
+  }
+  .box::after { /* faint scan lines */
+    content: ""; position: absolute; inset: 0; border-radius: 4px; pointer-events: none;
+    background: repeating-linear-gradient(to bottom, rgba(234, 246, 255, 0.055) 0 1px, transparent 1px 4px);
+  }
+  .title { font-family: "Orbitron", sans-serif; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+           font-size: 40px; line-height: 1.15; margin-bottom: 16px; text-shadow: 0 0 12px currentColor; }
+  .title.gold { color: var(--gold); }
+  .title.cyan { color: var(--cyan); }
+  .name { font-family: "Orbitron", sans-serif; font-weight: 700; font-size: 46px; color: var(--text); margin-bottom: 14px; }
+  .body { font-size: 30px; line-height: 1.45; white-space: pre-wrap; }
+  .body .caret { display: inline-block; width: 0.6em; background: var(--text); opacity: 0.85; }
+  .counter { font-family: "Orbitron", sans-serif; font-weight: 800; font-size: 64px; color: var(--text);
+             font-variant-numeric: tabular-nums; text-shadow: 0 0 14px rgba(89, 211, 255, 0.8); }
+  .glitch { position: absolute; inset: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+// Box description (set by the renderer):
+// {kind: "achievement"|"notice"|"counter"|"tiny", title, name, body, x, y, w, anchor,
+//  t_in, t_out, type_cps, counter_from, counter_to, counter_fmt, prefix}
+let BOX = null;
+const POP_IN = 0.120, POP_OUT = 0.150, GLITCH_FRAMES = 2, FPS = 24;
+
+function ease(u) { return 1 - Math.pow(1 - u, 3); }
+function fmt(n, f) { return f === "int" ? Math.round(n).toLocaleString("en-US") : String(Math.round(n)); }
+
+function build() {
+  const st = document.getElementById("stage");
+  st.innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "box"; el.id = "box";
+  const titleCls = BOX.kind === "achievement" ? "gold" : "cyan";
+  let html = "";
+  if (BOX.title) html += `<div class="title ${titleCls}">${BOX.title}</div>`;
+  if (BOX.name) html += `<div class="name">${BOX.name}</div>`;
+  if (BOX.kind === "counter") html += `<div class="counter" id="ctr"></div>`;
+  if (BOX.body !== undefined) html += `<div class="body" id="body"></div>`;
+  el.innerHTML = html;
+  if (BOX.w) el.style.width = BOX.w + "px";
+  st.appendChild(el);
+  // measure with the full text and counter end value so typing/ticking never resizes the panel
+  const body0 = el.querySelector("#body"), ctr0 = el.querySelector("#ctr");
+  if (body0) body0.textContent = BOX.body || "";
+  if (ctr0) {  // reserve the widest digit string of the final length, so the ticking count never leaves the box
+    const fin = (BOX.prefix || "") + fmt(BOX.counter_to, BOX.counter_fmt);
+    let maxW = 0;
+    for (let d = 0; d <= 9; d++) {
+      ctr0.textContent = fin.replace(/[0-9]/g, String(d));
+      maxW = Math.max(maxW, ctr0.getBoundingClientRect().width);
+    }
+    ctr0.textContent = fin;
+    ctr0.style.display = "inline-block"; ctr0.style.minWidth = Math.ceil(maxW + 4) + "px"; ctr0.style.textAlign = "center";
+  }
+  el.style.height = el.getBoundingClientRect().height + "px";
+  if (ctr0) el.style.width = el.getBoundingClientRect().width + "px";
+  const r = el.getBoundingClientRect();
+  const ax = BOX.anchor || "center";
+  el.style.left = (ax === "center" ? BOX.x - r.width / 2 : BOX.x) + "px";
+  el.style.top = (ax === "center" ? BOX.y - r.height / 2 : BOX.y) + "px";
+}
+
+window.setBox = function (box) { BOX = box; build(); return true; };
+
+window.renderAt = function (t) {
+  const el = document.getElementById("box");
+  const tin = BOX.t_in, tout = BOX.t_out;
+  if (t < tin || t >= tout + POP_OUT) { el.style.visibility = "hidden"; return; }
+  el.style.visibility = "visible";
+  let s = 1, o = 1, dx = 0, filt = "none";
+  if (t < tin + POP_IN) { const u = ease((t - tin) / POP_IN); s = 0.9 + 0.1 * u; o = u; }
+  if (t >= tout) { const u = (t - tout) / POP_OUT; s = 1 - 0.1 * u; o = 1 - u; el.style.transform = `scale(${s}, ${1 - u})`; }
+  // two-frame glitch right after the pop-in: horizontal slice offset + chromatic split
+  const f = Math.floor((t - tin) * FPS);
+  if (f >= 0 && f < GLITCH_FRAMES) { dx = f === 0 ? 14 : -9; filt = "drop-shadow(-4px 0 0 rgba(255,60,120,.65)) drop-shadow(4px 0 0 rgba(60,220,255,.65))"; }
+  if (t < tout) el.style.transform = `translateX(${dx}px) scale(${s})`;
+  el.style.opacity = o; el.style.filter = filt;
+  const body = document.getElementById("body");
+  if (body) {
+    const txt = BOX.body || "";
+    if (BOX.type_cps) {
+      const n = Math.max(0, Math.min(txt.length, Math.floor((t - tin) * BOX.type_cps)));
+      const caret = n < txt.length && Math.floor(t * 4) % 2 === 0 ? '<span class="caret">&nbsp;</span>' : "";
+      body.innerHTML = txt.slice(0, n).replace(/&/g, "&amp;").replace(/</g, "&lt;") + caret;
+    } else body.textContent = txt;
+  }
+  const ctr = document.getElementById("ctr");
+  if (ctr) {
+    const span = Math.max(1e-3, (tout - tin));
+    const u = Math.min(1, Math.max(0, (t - tin) / span));
+    ctr.textContent = (BOX.prefix || "") + fmt(BOX.counter_from + (BOX.counter_to - BOX.counter_from) * ease(u), BOX.counter_fmt);
+  }
+};
+</script>
+</body>
+</html>

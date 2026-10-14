@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__SLUG__ · decisions</title>
+<style>
+  :root {
+    --bg: #12110f;
+    --card: #1c1a17;
+    --line: #3c362e;
+    --text: #f4f0e6;
+    --muted: #b7b0a4;
+    --accent: #e4d2a8;
+    --ink: #1a1612;
+    --ok: #9dba8c;
+    --wait: #d7b15e;
+    --now: #8eb4c9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 18px/1.5 Georgia, "Noto Serif", "Iowan Old Style", serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 36px 20px 80px; }
+  h1 { font-weight: 500; font-size: 34px; letter-spacing: -0.02em; margin: 0 0 6px; }
+  h2 { font-weight: 500; font-size: 22px; margin: 36px 0 12px; }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+  .nav a, button, .choice {
+    font: 15px/1.2 Georgia, serif;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 10px 16px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .nav a { display: inline-block; }
+  button.primary, .choice.on { background: var(--accent); color: var(--ink); border-color: var(--accent); }
+  .cols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  @media (max-width: 800px) { .cols { grid-template-columns: 1fr 1fr; } }
+  .col, .card, .log {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px 16px;
+  }
+  .col h3 { margin: 0 0 8px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  .col.done h3 { color: var(--ok); }
+  .col.now h3 { color: var(--now); }
+  .col.next h3 { color: var(--accent); }
+  .col.wait h3 { color: var(--wait); }
+  ul { margin: 0; padding-left: 18px; }
+  li { margin: 4px 0; }
+  .card { margin: 14px 0; }
+  .card h3 { margin: 0 0 8px; font-size: 22px; font-weight: 500; }
+  .rec { color: var(--accent); }
+  .paths { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 13px; color: var(--muted); }
+  .paths div { margin: 2px 0; overflow-wrap: anywhere; }
+  textarea, input[type="text"] {
+    width: 100%;
+    margin-top: 8px;
+    background: #100e0c;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font: 16px/1.4 Georgia, serif;
+  }
+  .status { font-family: ui-monospace, monospace; font-size: 13px; color: var(--muted); }
+  .log { white-space: pre-wrap; font-size: 15px; }
+  .score { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 500; }
+  .pair { margin: 10px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">__SLUG__</h1>
+  <p class="muted">Roadmap and open decisions. A saved choice is a note. It does not by itself approve a gate.</p>
+  <p class="row nav">
+    <a href="qc/imagine/charcoal/index.html">Gallery</a>
+    <a href="qc/listen/index.html">Listen</a>
+    <a href="style_guide.md">Style guide</a>
+    <a href="DECISIONS.md">Decision log</a>
+    <a href="manifest.json">Manifest</a>
+    <a href="qc/coherence.md">Fit check</a>
+  </p>
+  <p id="guide" class="status">Style guide: …</p>
+  <h2>Roadmap</h2>
+  <div class="cols" id="road"></div>
+  <h2>Fit check</h2>
+  <p class="muted">Low weight. A fit check, not a popularity score and not a gate. No choice on this card. It does not sit under “Waiting for you”.</p>
+  <div id="fit"></div>
+  <h2>Open decisions</h2>
+  <p class="row"><button class="primary" id="save-all" type="button">Save all</button> <span id="msg" class="status"></span></p>
+  <div id="cards"></div>
+  <h2>Recent log</h2>
+  <div class="log" id="log">…</div>
+</main>
+<script>
+const STAGES = [
+  ["0", "Inventory"],
+  ["1", "Song"],
+  ["2", "Timing"],
+  ["3", "Voices"],
+  ["4", "Mix"],
+  ["5", "Looks"],
+  ["6", "Stills"],
+  ["7", "Clips"],
+  ["8", "Lip-sync"],
+  ["9", "Overlays"],
+  ["10", "Edit"]
+];
+const DONE = new Set(["picked", "done", "pass", "approved", "complete", "skipped"]);
+
+async function grab(url) {
+  const res = await fetch(url, {cache: "no-store"});
+  if (!res.ok) return null;
+  const type = res.headers.get("content-type") || "";
+  return type.includes("json") || url.endsWith(".json") ? res.json() : res.text();
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function roadmap(manifest, saved) {
+  const stages = (manifest && manifest.stages) || {};
+  const gates = (manifest && manifest.gates) || {};
+  const done = [], now = [], next = [];
+  STAGES.forEach(([id, name]) => {
+    const status = stages[id] ? stages[id].status : "not started";
+    const line = `Stage ${id} ${name} — ${status}`;
+    if (DONE.has(status)) done.push(line);
+    else if (status === "running") now.push(line);
+  });
+  const song = gates.song_take;
+  const songOpen = song && song.enabled && song.status !== "approved";
+  if (now.length && songOpen) {
+    now.push(`Song gate — ${song.status}`);
+    next.push("Stage 2 timing, after the take is picked");
+  } else if (songOpen && !DONE.has((stages["1"] || {}).status)) {
+    next.push("Stage 1 Song");
+  } else {
+    const started = STAGES.map(([id]) => id).filter(id => stages[id]).map(Number);
+    const floor = started.length ? Math.min(...started) : 1;
+    const pending = STAGES.find(([id]) => Number(id) >= floor && !DONE.has((stages[id] || {}).status) && (stages[id] || {}).status !== "running");
+    if (pending) next.push(`Stage ${pending[0]} ${pending[1]} — ${stages[pending[0]] ? stages[pending[0]].status : "not started"}`);
+  }
+  const waiting = (window.CARDS || []).filter(c => !saved[c.id] || !saved[c.id].choice).map(c => c.title);
+  const col = (cls, title, items) => `<section class="col ${cls}"><h3>${title}</h3><ul>${
+    items.length ? items.map(x => `<li>${esc(x)}</li>`).join("") : "<li class='muted'>—</li>"
+  }</ul></section>`;
+  document.getElementById("road").innerHTML =
+    col("done", "Done", done) + col("now", "Now", now) + col("next", "Next", next) + col("wait", "Waiting for you", waiting);
+}
+
+function cardView(card, saved) {
+  const prev = saved[card.id] || {};
+  const evidence = card.evidence || [];
+  const choices = (card.choices || []).map(ch => {
+    const on = prev.choice === ch.id ? " on" : "";
+    return `<button type="button" class="choice${on}" data-choice="${esc(ch.id)}">${esc(ch.label)}</button>`;
+  }).join("");
+  const paths = evidence.map(e => `<div>${esc(e.path)}</div>`).join("");
+  const links = evidence.map(e => `<a href="${esc(e.path)}">${esc(e.label || e.path)}</a>`).join(" ");
+  return `<article class="card" data-id="${esc(card.id)}">
+    <h3>${esc(card.title)}</h3>
+    <p>${esc(card.why || "")}</p>
+    <p class="rec">Recommendation: ${esc(card.recommend || "—")}</p>
+    <p class="row">${choices}</p>
+    <p class="row">${links}</p>
+    <div class="paths">${paths}</div>
+    <label class="muted">Note</label>
+    <textarea rows="3">${esc(prev.note || "")}</textarea>
+    <p class="status">${prev.at ? "Saved " + esc(prev.at) + " · " + esc(prev.choice) : "Not saved"}</p>
+    <p><button type="button" class="save-one">Save this card</button></p>
+  </article>`;
+}
+
+function fitView(data) {
+  const host = document.getElementById("fit");
+  const runs = data && Array.isArray(data.runs) ? data.runs : [];
+  if (!runs.length) {
+    host.innerHTML = "<article class='card' data-info='1'><p class='muted'>Not run yet. The checklist is qc/coherence.md. Run it at the concept stage, and again before the style guide is approved.</p></article>";
+    return;
+  }
+  const run = runs[runs.length - 1];
+  const pairs = (run.pairs || []).map(p =>
+    `<p class="pair"><span class="score">${esc(p.score)} / 5</span> <strong>${esc(p.pair)}</strong> — ${esc(p.reason)}</p>`
+  ).join("");
+  const refs = (run.references || []).map(r => `<li>${esc(r)}</li>`).join("");
+  const files = (run.files || []).map(f =>
+    `<div><a href="${esc(f.path)}">${esc(f.label || f.path)}</a></div><div>${esc(f.path)}</div>`
+  ).join("");
+  const nEarlier = runs.length - 1;
+  const earlier = nEarlier
+    ? `<p class="status">${nEarlier} earlier ${nEarlier === 1 ? "run" : "runs"} in ${esc(data.markdown || "qc/coherence.md")}.</p>`
+    : "";
+  host.innerHTML = `<article class="card" data-info="1">
+    <h3>Fit check · ${esc(run.label || run.when || "latest")}</h3>
+    <p class="muted">${esc(run.note || "Information only.")}</p>
+    ${pairs}
+    <p class="rec">Comparable works</p>
+    <ul>${refs || "<li class='muted'>—</li>"}</ul>
+    <div class="paths">${files}</div>
+    <p class="row"><a href="${esc(data.markdown || "qc/coherence.md")}">Full check</a></p>
+    ${earlier}
+    <p class="status">${esc(run.at || "")} · not a gate</p>
+  </article>`;
+}
+
+function payload(root) {
+  const items = {};
+  const cards = root.matches && root.matches(".card") ? [root] : [...root.querySelectorAll(".card")];
+  cards.forEach(card => {
+    if (card.dataset.info) return;
+    const on = card.querySelector(".choice.on");
+    if (!on) return;
+    const evidence = [...card.querySelectorAll(".paths div")].map(d => d.textContent);
+    items[card.dataset.id] = {choice: on.dataset.choice, note: card.querySelector("textarea").value, evidence};
+  });
+  return {items};
+}
+
+async function save(body) {
+  const msg = document.getElementById("msg");
+  if (!Object.keys(body.items).length) {
+    msg.textContent = "Pick a choice on a card first.";
+    return;
+  }
+  const res = await fetch("/save-decisions", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)
+  });
+  msg.textContent = res.ok ? "Saved." : "Save failed (" + res.status + ").";
+  if (res.ok) boot();
+}
+
+async function boot() {
+  const [manifest, decisions, guide, log, catalog, coherence] = await Promise.all([
+    grab("/manifest.json"), grab("/qc/decisions.json"), grab("/style_guide.json"),
+    grab("/DECISIONS.md"), grab("/qc/decision_cards.json"), grab("/qc/coherence.json")
+  ]);
+  window.CARDS = (catalog && catalog.cards) || [];
+  const saved = (decisions && decisions.items) || {};
+  const title = (manifest && manifest.project) || "__SLUG__";
+  document.getElementById("title").textContent = title;
+  document.title = title + " · decisions";
+  const st = (guide && guide.status) || "missing";
+  document.getElementById("guide").textContent = "Style guide: " + st + (st === "approved" ? "" : " — stills wait for approved");
+  roadmap(manifest, saved);
+  fitView(coherence);
+  const box = document.getElementById("cards");
+  box.innerHTML = window.CARDS.length ? window.CARDS.map(c => cardView(c, saved)).join("") : "<p class='muted'>No decision cards yet.</p>";
+  box.querySelectorAll(".choice").forEach(btn => btn.addEventListener("click", () => {
+    btn.parentElement.querySelectorAll(".choice").forEach(b => b.classList.remove("on"));
+    btn.classList.add("on");
+  }));
+  box.querySelectorAll(".save-one").forEach(btn => btn.addEventListener("click", () => {
+    save(payload(btn.closest(".card")));
+  }));
+  const heads = String(log || "").split("\n").filter(l => l.startsWith("## ")).slice(-8);
+  document.getElementById("log").textContent = heads.length ? heads.join("\n") : "No dated entries yet.";
+}
+
+document.getElementById("save-all").addEventListener("click", () => save(payload(document)));
+boot();
+</script>
+</body>
+</html>
