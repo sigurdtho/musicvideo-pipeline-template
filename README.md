@@ -115,3 +115,5 @@ SigurdJorsalfar. Follow on X: https://x.com/SigurdJorsalfar
 ## License
 
 MIT, see `LICENSE`.
+
+This repository is not accepting contributions.
